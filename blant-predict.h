@@ -15,7 +15,6 @@ void PredictFlushAllCounts(GRAPH *G);
 void Predict_ProcessLine(GRAPH *G, char line[]);
 
 void AccumulateGraphletParticipationCounts(GRAPH *G, unsigned Varray[], TINY_GRAPH *g, int Gint, int GintOrdinal);
-Boolean IncrementNodePairCount(int G_u, int G_v, char *ID, int canonicalCount);
 int PredictMerge(GRAPH *G);
 
 #endif

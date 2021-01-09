@@ -8,7 +8,6 @@ the training data."
 
 die(){ (echo "$USAGE"; echo "FATAL ERROR: $@")>&2; exit 1; }
 
-TEST="$1"
 INCLUDE_KNOWN=0
 while [ $# -gt 1 ]; do
     case "$1" in
@@ -18,14 +17,19 @@ while [ $# -gt 1 ]; do
     esac
 done
 
-[ $# -eq 1 ] || die "expecting a blant-mp output file"
+[ $# -le 1 ] || die "expecting a blant-mp output file"
+
+TMPDIR=`mktemp -d /tmp/predict-from-blant-mp.XXXXXX`
+trap "/bin/rm -rf $TMPDIR; exit" 0 1 2 3 15 # call trap "" N to remove the trap for signal N
+
+cat "$@" > $TMPDIR/input
 
 # input lines look like:
 #ENSG00000197362:ENSG00000204178 0	4:9:0:4 4	4:5:1:2 46	4:6:0:3 6	4:7:1:2 2	[ etc ... ]
 # where the colon word is k:g:i:j (g=graphlet Ordinal, i,j is a node (NOT ORBIT) pair in g.), followed by a count.
 # We call (i,j) a "canonical node pair", or cnp for short.
 
-hawk 'BEGIN{min_samples=1000; min_rho=0.6; min_t=100; min_p=0.9} # THESE MAY NEED TO BE ADJUSTED
+hawk 'BEGIN{min_samples=100; min_rho=0.1; min_t=10; min_p=0.5} # THESE MAY NEED TO BE ADJUSTED
     ARGIND==1{
 	uv=$1 # node pair
 	E[uv]=e=$2 # edge Boolean
@@ -74,6 +78,6 @@ hawk 'BEGIN{min_samples=1000; min_rho=0.6; min_t=100; min_p=0.9} # THESE MAY NEE
 		if (p1<prec[cnp][c]){p1=prec[cnp][c];bestCol=c"="cnp} #... and take the best resulting prediction
 	}
 	if(p1>min_p && E[uv]<='$INCLUDE_KNOWN') printf "%s\t%g\tbestCol %s\t[%s]\n",uv,p1,bestCol,$0
-    }' "$1" "$1" | # yes, twice
-    sort -S4G -k 2gr -k 4nr
+    }' "$TMPDIR/input" "$TMPDIR/input" | # yes, twice
+    sort -S4G -k 2gr -k 4nr #|
     #awk '{sum+=$6; printf "%d prec %g %s\n", NR, sum/NR,$0}'

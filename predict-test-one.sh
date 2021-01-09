@@ -1,22 +1,10 @@
 #!/bin/sh
-USAGE="USAGE: $0 blant.exe M TOP train.el test.el test.el [list of k values]"
-
+BASENAME=`basename "$0"`
+USAGE="USAGE: $BASENAME blant.exe M TOP train.el test.el [list of k values, default k=4]"
 die(){ (echo "$USAGE"; echo "FATAL ERROR: $@")>&2; exit 1; }
-warn(){ (echo "WARNING: $@")>&2; }
-not(){ if eval "$@"; then return 1; else return 0; fi; }
-newlines(){ awk '{for(i=1; i<=NF;i++)print $i}' "$@"; }
-parse(){ awk "BEGIN{print $@}" </dev/null; }
 
-NL='
-'
-TAB='	'
-
-# Temporary Filename + Directory (both, you can use either, note they'll have different random stuff in the XXXXXX part)
-TMP=`mktemp /tmp/$BASENAME.XXXXXX`
-TMPDIR=`mktemp -d /tmp/$BASENAME.XXXXXX`
-trap "/bin/rm -rf $TMP $TMPDIR; exit" 0 1 2 3 15 # call trap "" N to remove the trap for signal N
-
-[ -x "$1" ] || die "first arg must be executable"
+[ $# -ge 5 ] || die "need at least 5 args"
+#[ -x "$1" ] || die "first arg must be executable"
 BLANT="$1"
 M=$2
 TOP=$3

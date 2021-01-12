@@ -9,6 +9,10 @@
 #include <signal.h>
 #include <ctype.h>
 
+// Watch memory usage
+#include <sys/time.h>
+#include <sys/resource.h>
+
 /* General note: when associating any pair of nodes (u,v) in the large graph G, with "canonical orbit pairs" in
 ** canonical graphlets, the number of possible combination is so incredibly enormous and sparse, that even hashing
 ** was too wasteful of memory. Thus I moved to storing the associations for *each* pair (u,v) in one binary tree.
@@ -29,12 +33,44 @@ static HTREE ***_PredictGraph; // lower-triangular matrix (ie., j<i, not i<j) of
 // Is is there anything in _PredictGraph[i][j]?
 #define PREDICT_GRAPH_NON_EMPTY(i,j) (_PredictGraph[i][j] && _PredictGraph[i][j]->tree->root)
 
+// This is a hack that's required for parallelism: technically we only need to output the *final* counts once
+// we've accumulated them. But if we're a child process just shunting those counts off to a parent process who's
+// accumulating these counts globally, it turns out that it's expensive for the parent, and if we wait until the
+// end to provide our output then the parent is sitting around twiddling its thumbs until the end, and is suddenly
+// inundated with expensive parsing. So instead, if we're a child process, every fraction of a second (0.1s seems
+// best), we spit out our accumulation so far so the parent can parse them online. This Boolean is set to true each
+// 0.1s, and below we check it to see if it's time to flush our counts.
+static Boolean _flushCounts = true;
+
+// Signal handler for the SIGALRM that occurs periodically forcing us to flush our counts to a parent (if we're _child).
+int AlarmHandler(int sig)
+{
+    //assert(_child && !_flushCounts);
+    //fprintf(stderr, "Alarm in process %d\n", getpid());
+    ualarm(0);
+    _flushCounts = true;
+    static struct rusage usage;
+    int status = getrusage(RUSAGE_SELF, &usage);
+    assert(status == 0);
+    //Warning("res %g drss %g srss %g", usage.ru_maxrss/1e6, usage.ru_idrss/1.0, usage.ru_isrss/1.0);
+    if(usage.ru_maxrss > (long)25e6 || (usage.ru_idrss+usage.ru_isrss)>(long)30e6)
+    {
+	Warning("WARNING: Resident memory usage has reached %g GB", usage.ru_maxrss/1e6);
+	_memUsageAlarm=true;
+    }
+    signal(SIGALRM, (__sighandler_t) AlarmHandler);
+    alarm(1);
+}
+
 // Allocate the NULL pointers for just the *rows* of the PredictGraph[i].
 void Predict_Init(GRAPH *G) {
     int i;
+    assert(_PredictGraph==NULL);
     // This just allocates the NULL pointers, no actual binary trees are created yet.
     _PredictGraph = Calloc(G->n, sizeof(HTREE**)); // we won't use element 0 but still need n of them
     for(i=1; i<G->n; i++) _PredictGraph[i] = Calloc(i, sizeof(HTREE*));
+    signal(SIGALRM, (__sighandler_t) AlarmHandler);
+    alarm(1);  // (int)(2*_MAX_THREADS*drand48())); // on average, have one child per second send data to the parent process
 }
 
 
@@ -138,7 +174,7 @@ static Boolean TraverseCanonicalPairs(foint key, foint data) {
     static char ID2[BUFSIZ], ID3[BUFSIZ];
 #if RAW_COUNTS // the tail end of the ID string contains either x:y (COUNT_xy_only) or q:r:x:y (otherwise)
     strcpy(ID3, ID); // make a copy so we can nuke bits of it.
-#else RAW_COUNTS // the tail end of the ID string contains either x:y (COUNT_xy_only) or q:r:x:y (otherwise)
+#else // the tail end of the ID string contains either x:y (COUNT_xy_only) or q:r:x:y (otherwise)
     strcpy(ID2, ID); // make a copy so we can nuke bits of it.
     int q,r, IDlen = strlen(ID);
     q = *(ID+IDlen-3)-'0';
@@ -390,24 +426,6 @@ static void AccumulateCanonicalSubmotifs(int topOrdinal, TINY_GRAPH *g)
     }
 }
 
-// This is a hack that's required for parallelism: technically we only need to output the *final* counts once
-// we've accumulated them. But if we're a child process just shunting those counts off to a parent process who's
-// accumulating these counts globally, it turns out that it's expensive for the parent, and if we wait until the
-// end to provide our output then the parent is sitting around twiddling its thumbs until the end, and is suddenly
-// inundated with expensive parsing. So instead, if we're a child process, every fraction of a second (0.1s seems
-// best), we spit out our accumulation so far so the parent can parse them online. This Boolean is set to true each
-// 0.1s, and below we check it to see if it's time to flush our counts.
-static Boolean _flushCounts = true;
-
-// Signal handler for the SIGALRM that occurs periodically forcing us to flush our counts to a parent (if we're _child).
-int AlarmHandler(int sig)
-{
-    assert(_child && !_flushCounts);
-    fprintf(stderr, "Alarm in process %d\n", getpid());
-    ualarm(0);
-    _flushCounts = true;
-}
-
 /* This is called from ProcessGraphlet: a whole Varray of nodes from a sampled graphlet. Our job here is to
 ** accumulate the association counts for each pair of nodes, using the memoized counts from canonical graphlets
 ** computed above.
@@ -481,8 +499,6 @@ void AccumulateGraphletParticipationCounts(GRAPH *G, unsigned Varray[], TINY_GRA
 		_PredictGraph[G_u][G_v]=NULL;
 	    }
 	}
-	signal(SIGALRM, (__sighandler_t) AlarmHandler);
-	ualarm(100000);  // (int)(2*_MAX_THREADS*drand48())); // on average, have one child per second send data to the parent process
     }
 #endif
 }
@@ -497,7 +513,7 @@ int PredictMerge(GRAPH *G)
     assert(_JOBS==1); // we only read from standard input, so threads make no sense.
     char line[MAX_ORBITS * BUFSIZ];
     int lineNum = 0;
-    while(fgets(line, sizeof(line), stdin)) {
+    while(fgets(line, sizeof(line), stdin) && !_memUsageAlarm) {
 	Predict_ProcessLine(G, line);
 	++lineNum;
     }

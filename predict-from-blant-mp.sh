@@ -29,7 +29,7 @@ cat "$@" > $TMPDIR/input
 # where the colon word is k:g:i:j (g=graphlet Ordinal, i,j is a node (NOT ORBIT) pair in g.), followed by a count.
 # We call (i,j) a "canonical node pair", or cnp for short.
 
-hawk 'BEGIN{min_samples=1000; min_rho=0.4; min_t=100; min_p=0.9} # THESE MAY NEED TO BE ADJUSTED
+hawk 'BEGIN{min_samples=1000; min_rho=0.1; min_t=6; min_p=0.8} # THESE MAY NEED TO BE ADJUSTED
     ARGIND==1{
 	uv=$1 # node pair
 	E[uv]=e=$2 # edge Boolean

@@ -198,6 +198,6 @@ for i in 0 1; do
     fi
 done | $PARALLEL
 
-./predict-blant-mp-nodewise.sh $TMPDIR/*.K -noprec | awk '{gsub(":"," "); printf "%s\t%s\n%s\t%s\n",$2,$3,$3,$2}' |
+./predict-blant-mp-nodewise.sh $TMPDIR/*.K -noprec | hawk '{gsub(":"," "); printf "%s\t%s\n",MAX($2,$3),MIN($2,$3)}' |
     fgrep -f - $TMPDIR/*-test.el | 
     awk 'END{m=2*'$m'; printf "%d correct predictions out of %d, recall = %g\n",NR,m,NR/m}'

@@ -199,6 +199,6 @@ for i in 0 1; do
 done | $PARALLEL
 
 for i in 0 1; do
-    ./predict-blant-mp.sh "$TMPDIR/blant-mp.train$i-$N$Z.$S.K" | cut -f1 | sed 's/:/	/' | #awk '{gsub(":"," "); printf "%s\t%s\n%s\t%s\n",$2,$3,$3,$2}' |
+    ./predict-blant-mp.sh "$TMPDIR/blant-mp.train$i-$N$Z.$S.K" | cut -f1 | sed 's/:/	/' | #hawk '{gsub(":"," "); printf "%s\t%s\n",MAX($2,$3),MIN($2,$3)}' |
     fgrep -f - $TMPDIR/G$i-test.el | 
     awk 'END{m=2*'$m'; printf "%d correct predictions out of %d, recall = %g\n",NR,m,NR/m}'

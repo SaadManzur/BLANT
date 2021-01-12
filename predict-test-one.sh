@@ -15,7 +15,7 @@ shift 5
     ./predict-edges-from-network.sh -B "$BLANT" -M $M "$train" "$@" |
 	sed 's/:/    /' |
 	head -$TOP |
-	awk '{ printf "%s\t%s\n%s\t%s\n", $1,$2,$2,$1 }' |
+	hawk '{ printf "%s\t%s\n", MAX($1,$2),MIN($1,$2) }' |
 	fgrep -c -f - "$test"
 ) | awk 'NR==1{K=$0}
 	    NR>1{printf "\t\t\t**********************\tM='$M' K=%s: Recovered %d edges out of '$TOP', precision %g%% ********************\n", K, $1,100*$1/'$TOP'}'

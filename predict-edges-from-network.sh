@@ -102,5 +102,4 @@ else
 	 cat                $TMPDIR/blant-mp.*.k?.* | $BLANT -k8 -mq $TMPDIR/G.el > $TMPDIR/blant-mp.$S.${M}M.K
     fi
 fi
-echo "Remember: edge order matters! You may need to list both u:v and v:u to ensure you catch the edge" >&2
 ./predict-from-blant-mp.sh $INCLUDE_KNOWN "$TMPDIR/blant-mp.$S.${M}M.K" | cut -f1

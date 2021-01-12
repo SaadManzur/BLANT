@@ -1,24 +1,24 @@
 #!/bin/sh
 USAGE="USAGE: $0 [-async] -C {2|3|4|5} blant-exec {then blant args, including -mp}
-[2344] is COLS, and mandatory: how many columns to remember?"
+[2345] is COLS, and mandatory: which columns to remember?"
 die(){(echo "$USAGE"; echo "$0: FATAL ERROR: $@") >&2; exit 1; }
 
 ASYNC=false
 while [ $# -gt 0 ]; do
     case "$1" in
     -a*) ASYNC=true; shift;;
-    -C) COLS=$2; shift 2; echo "$COLS" | grep -q '^[2345]$' || die "expecting COLS to be [2345]" ;;
+    -C) COLS=$2; shift 2;;
     -*) die "unknown option '$1'";;
     *) break;;
     esac
 done
 
+echo "$COLS" | grep -q '^[2345]$' || die "expecting COLS to be one of [2345]"
+
 k=`echo "$@" | sed -e 's/.*-k//' | awk '{printf "%d\n",$1}'`
 echo "$k" | grep -q '^[45678]$' || die "expecting -k argument with 4-8"
 
 BLANT=$1; shift
-
-#[ "$BLANT" != cat ] && BLANT="$BLANT -k $k"
 
 $BLANT "$@" | hawk 'BEGIN{C='$COLS'}
     {

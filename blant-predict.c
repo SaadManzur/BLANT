@@ -3,94 +3,48 @@
 #include "../blant-output.h"
 #include "../blant-utils.h"
 #include "blant-predict.h"
-#include "bintree.h"
+#include "htree.h"
 #include "rand48.h"
 #include <math.h>
 #include <signal.h>
 #include <ctype.h>
 
-/* General note: when associating any pair of nodes (u,v) in the large graph G, with "canonical node pairs" in
+/* General note: when associating any pair of nodes (u,v) in the large graph G, with "canonical orbit pairs" in
 ** canonical graphlets, the number of possible combination is so incredibly enormous and sparse, that even hashing
 ** was too wasteful of memory. Thus I moved to storing the associations for *each* pair (u,v) in one binary tree.
 ** Thus for G with n nodes, there are potentially (n choose 2) distinct binary trees, each holding the list
-** of canonical node pair associations and the respective count. Basically for a 10,000 node graph, and using
-** k=8, there are 80,000 possible orbits--except I discovered orbit pairs aren't enough, you need to use the
-** actual nodes. Thus for k=8 there are 12346 canonical graphlets each with 7*8 possible pairs, for a total
-** of 12346*7*8 = 691,000 possible canonical node pairings... so the total number of possible *associations*
-** between any (u,v) in G and any canonical node pair is n^2 * 691,000... and for n=10,000 nodes, that's
-** 7 x 10^13 associations... each of which must have a *count* (potentially requiring 32 bits), for a total
-** of 3e14 bytes. So not feasible, and even a hash table (which is sparsely stored to reduce collisions)
-** was requiring >100GB to store these associations. A Binary tree is a bit slower but requires only about 5GB.
+** of canonical orbit pair associations and the respective count. Basically for a 10,000 node graph, and using
+** k=8, there are almost a quarter million  possible orbit pairs... so the total number of possible *associations*
+** between any (u,v) in G and any canonical node pair is (n choose 2) * 244,000 ... and for n=10,000 nodes, that's
+** 1.2 x 10^13 associations... each of which must have a *count* (potentially requiring 32 bits), for a total
+** of 5e13 bytes=50 TB. So not feasible, and even a hash table (which is sparsely stored to reduce collisions)
+** was requiring >100GB to store these associations. A Binary tree is a bit slower but requires far less RAM.
 */
 
-// Method used to store the sparse relationship between node pairs in G, and Canonical Graphlet Node Pairs.
-// BINTREE is actually the only one implemented--hashmap required tens to hundreds of GB while BT needs only a handful
-// and is plenty fast enough.
-#define PREDICT_USE_BINTREE 1
-#define PREDICT_USE_AWK !(PREDICT_USE_BINTREE) // use awk for the associations
-#if (PREDICT_USE_BINTREE+PREDICT_USE_AWK) != 1
-#error can only choose one method of accumulating node pair associations
-#endif
-
-#if PREDICT_USE_BINTREE
-static BINTREE ***_PredictGraph; // lower-triangular matrix (ie., j<i, not i<j) of dictionary entries
+// Note for the PredictGraph we actually use an HTREE--heirarchical Tree, where the first key is the
+// orbit pair (o,p) from graphlet K, and the second key is any edge in any graphlet K; we then use the
+// total number of edges from G seen in any graphlet K to compute the weight of u:v's o:p orbit pair.
+static HTREE ***_PredictGraph; // lower-triangular matrix (ie., j<i, not i<j) of dictionary entries
 
 // Is is there anything in _PredictGraph[i][j]?
-#define PREDICT_GRAPH_NON_EMPTY(i,j) (_PredictGraph[i][j] && _PredictGraph[i][j]->root)
+#define PREDICT_GRAPH_NON_EMPTY(i,j) (_PredictGraph[i][j] && _PredictGraph[i][j]->tree->root)
 
 // Allocate the NULL pointers for just the *rows* of the PredictGraph[i].
 void Predict_Init(GRAPH *G) {
     int i;
     // This just allocates the NULL pointers, no actual binary trees are created yet.
-    _PredictGraph = Calloc(G->n, sizeof(BINTREE**)); // we won't use element 0 but still need n of them
-    for(i=1; i<G->n; i++) _PredictGraph[i] = Calloc(i, sizeof(BINTREE*));
-}
-
-
-/* Called indirectly via BinTreeTraverse, which prints *all* the currently stored participation counts
-** of a particular pair of nodes (u,v) in G. This function is called on each such participation count,
-** and it simply prints the k:g:i:j canonical set, and its count, to stdout.
-*/
-Boolean TraverseNodePairCounts(foint key, foint data) {
-    char *ID = key.v;
-    int *pCount = data.v;
-    printf("\t%s %d",ID, *pCount);
-    return true;
-}
-
-#else
-
-void Predict_Init(GRAPH *G) {} // Nothing to do if no BinTrees.
-
-#endif
-
-
-/* Loop across all pairs of nodes (u,v) in G, and for each pair, print on one line the pair of nodes,
-** the edge truth, and all the participation counts.
-*/
-void PredictFlushAllCounts(GRAPH *G){
-    if(_child) ualarm(0); // turn off _flushCounts alarm
-    int i,j;
-#if PREDICT_USE_BINTREE
-    for(i=1; i < G->n; i++) for(j=0; j<i; j++) {
-	if(PREDICT_GRAPH_NON_EMPTY(i,j))  // only output node pairs with non-zero counts
-	{
-	    printf("%s %d", PrintNodePairSorted(i,':',j), GraphAreConnected(G,i,j));
-	    BinTreeTraverse(_PredictGraph[i][j], TraverseNodePairCounts);
-	    puts("");
-	}
-    }
-#endif
+    _PredictGraph = Calloc(G->n, sizeof(HTREE**)); // we won't use element 0 but still need n of them
+    for(i=1; i<G->n; i++) _PredictGraph[i] = Calloc(i, sizeof(HTREE*));
 }
 
 
 /*
-** Our ultimate goal is: for a pair of nodes (u,v) and a CNP (o,p), count the number of distinct quadruples
+** Our ultimate goal is: for a pair of nodes (u,v) and an orbit pair (o,p), count the number of distinct quadruples
 ** (q,r,x,y) where (q,r)!=(o,p) is an edge, and (x,y) is an edge in G also !=(u,v). NOTE: after some experimentation
 ** it may be sufficient to ignore (q,r) and only count the edges (x,y) in G.
 **
-** In the case that we can ignore (q,r), it's fairly easy: our "count only" version creates one sorted binary tree
-** for each (u,v) pair in G, with the tree sorted on the key (o,p) represented as a string, and with the data
+** In the case that we can ignore (q,r), it's fairly easy: our "count only" version creates one sorted binary
+** tree for each (u,v) pair in G, with the tree sorted on the key (o,p) represented as a string, and with the data
 ** member being an integer count. Adding (x,y) into the mix is easy: instead of the data member being a count, it'll
 ** be *another* binary tree using the key (x,y), and *that* binary tree will have no data member. Then the count for
 ** (u,v,o,p) is simply the number of entries in the (u,v)->(o,p) binary tree, ie the number of unique (x,y) keys in it.
@@ -98,10 +52,10 @@ void PredictFlushAllCounts(GRAPH *G){
 ** To use a binary tree for the more complex case, we *could* do it as follows: for each (u,v) and each (o,p), have a
 ** separate binary tree--which multiplies our number of binary tree by (k choose 2)--and then in each such binary tree,
 ** keep track of the number of distinct keys (q,r,x,y); we wouldn't even need a data member, we just need to count
-** distinct keys, which would be B->n.
+** distinct keys, which would be B->n. [THIS IS HOW WE ACTUALLY DO IT, using an HTREE.]
 
-** However, we don't want to so many binary trees. So, instead... we're gonna do some clever encoding. Note that
-** (o,p,q,r) has exactly (k choose 2)^2 possible values [or just (k choose 2) if we ignore (q,0).].
+** If we wanted to be more clever, we could do some clever encoding. (We won't unless saving memory becomes crucial.)
+** Note that (o,p,q,r) has exactly (k choose 2)^2 possible values [or just (k choose 2) if we ignore (q,r).].
 ** At k=8 that's only 784 [28] possible values, and we only need to remember a BOOLEAN of each.
 ** Thus, we'll represent whether we've seen (o,p,q,r) as a SET*, which will require
 ** about 100 bytes total. Given (o,p,q,r) we'll convert (o,p) to int via creating an empty TinyGraph, adding (o,p),
@@ -115,27 +69,77 @@ void PredictFlushAllCounts(GRAPH *G){
 ** edges that have been observed in the same sampled graphlet, of whether (x,y) has appeared at CNP (q,r).
 ** (1 if yes, 0 if no).
 */
-#define RAW_COUNTS 0
+#define RAW_COUNTS 0 // this works OK but COUNT_xy_only works better
 #if !RAW_COUNTS
-#define COUNT_xy_only 1 // count unique [xy] edges only; othewise include both q:r and x:y
+#define COUNT_xy_only 1 // count unique [xy] edges only; othewise include both q:r and x:y; edges only seems to work best.
 #endif
 
+#ifdef COUNT_xy_only
+// This function is only used if we want to see how many times each xy edge has been seen--but it doesn't seem necessary.
+Boolean Traverse_xy(foint key, foint data) {
+    assert(COUNT_xy_only);
+    char *ID = key.v;
+    int *pCount = data.v;
+    printf("(x:y)=%s %d",ID, *pCount);
+    return true;
+}
+#endif
 
-// Prototype; code is below
-static void UpdateNodePair(int G_u, int G_v, char *ID, int count);
+/* TraverseNodePairCounts is called indirectly via BinTreeTraverse, which prints *all* the currently stored
+** participation counts of a particular pair of nodes (u,v) in G. This function is called on each such
+** participation count, and it simply prints the k:o:p canonical orbit pair, and its weight (|xy|), to stdout.
+*/
+Boolean TraverseNodePairCounts(foint key, foint data) {
+    char *ID = key.v;
+#if RAW_COUNTS
+    int *pCount = data.v;
+    printf("\t%s %d",ID, *pCount);
+#else // seems to be the same output whether or not COUNT_xy_only, since it's the ID that distinguishes them.
+    BINTREE *op_xy = data.v;
+    printf("\t%s %d",ID, op_xy->n);
+    //BinTreeTraverse(op_xy, Traverse_xy); // only if we want to the count of each edge or (q,r,x,y) quad.
+#endif
+    return true;
+}
 
-static int  _TraverseCanonicalPairs_G_u, _TraverseCanonicalPairs_G_v; // indices into _PredictGraph[u][v]
-static char *_TraverseCanonicalPairs_perm; // permutation array for the incoming nodes
-static unsigned *_TraverseCanonicalPairs_Varray;
-// This function is called via BinaryTreeTravers. It gets called once for each pair of canonical nodes that has
-// stored info on that pair; this functions' job is to transfer that info to global node pairs in G called (u,v).
-// The pair of nodes (u,v) in G must be global (above) since they're set below and used here during the travelsal.
+
+/* Loop across all pairs of nodes (u,v) in G, and for each pair, print one line that contains:
+** the pair of nodes, the edge truth, and all the participation counts.
+*/
+void PredictFlushAllCounts(GRAPH *G){
+    if(_child) ualarm(0); // turn off _flushCounts alarm
+    int i,j;
+    for(i=1; i < G->n; i++) for(j=0; j<i; j++) {
+	if(PREDICT_GRAPH_NON_EMPTY(i,j))  // only output node pairs with non-zero counts
+	{
+	    printf("%s %d", PrintNodePairSorted(i,':',j), GraphAreConnected(G,i,j));
+	    BinTreeTraverse(_PredictGraph[i][j]->tree, TraverseNodePairCounts);
+	    puts("");
+	}
+    }
+}
+
+
+static void UpdateNodePair(int G_u, int G_v, char *ID, int count); // Prototype; code is below
+
+
+// TraverseCanonicalNodePairs is called via BinaryTreeTraverse to traverse all the known associations between a particular pair
+// of nodes in a canonical graphlet, in order to transfer that information to a a pair of nodes from a sampled graphlet in G.
+// (A new traversal is constructed for every pair of nodes in the sampled graphlet.)
+// This functions' job is to transfer that info to global node pairs in G called (G_u,G_v).
+// The pair of nodes (G_u,G_v) in G must be global since there's no other mechanism to get that info here.
+static int _TraverseCanonicalPairs_G_u, _TraverseCanonicalPairs_G_v; // indices into _PredictGraph[G_u][G_v]
+static char *_TraverseCanonicalPairs_perm; // canonical permutation array for the current sampled graphlet...
+static unsigned *_TraverseCanonicalPairs_Varray; // ...and the associated Varray.
+
 static Boolean TraverseCanonicalPairs(foint key, foint data) {
-    char *ID = key.v; // ID is a *string* of the form k:g:o:p[[q:r]:x:y], where g is the Ordinal, and o and p are nodes in g
-    int *pCanonicalCount = data.v;
+    char *ID = key.v; // ID is a *string* of the form k:o:p[[q:r]:x:y], where (o,p) is the canonical orbit pair.
+    int *pCanonicalCount = data.v; // the count that this (o,p) pair was seen at (u,v) during motif enumeration.
     static char ID2[BUFSIZ], ID3[BUFSIZ];
+#if RAW_COUNTS // the tail end of the ID string contains either x:y (COUNT_xy_only) or q:r:x:y (otherwise)
+    strcpy(ID3, ID); // make a copy so we can nuke bits of it.
+#else RAW_COUNTS // the tail end of the ID string contains either x:y (COUNT_xy_only) or q:r:x:y (otherwise)
     strcpy(ID2, ID); // make a copy so we can nuke bits of it.
-#if !RAW_COUNTS // the tail end of the ID string contains either x:y (COUNT_xy_only) or q:r:x:y (otherwise)
     int q,r, IDlen = strlen(ID);
     q = *(ID+IDlen-3)-'0';
     r = *(ID+IDlen-1)-'0';
@@ -143,50 +147,54 @@ static Boolean TraverseCanonicalPairs(foint key, foint data) {
     // x and y in the non-canonical motif g that is induced from G
     int g_x=_TraverseCanonicalPairs_perm[q], g_y=_TraverseCanonicalPairs_perm[r];
     int G_x=_TraverseCanonicalPairs_Varray[g_x], G_y=_TraverseCanonicalPairs_Varray[g_y]; // x and y in BIG graph G.
-    if(G_x < G_y) { int tmp = G_x; G_x=G_y; G_y=tmp; } // for consistency in accessing _PredictGraph
     if(g_x < g_y) { int tmp = g_x; g_x=g_y; g_y=tmp; } // lower triangle of g
+    if(G_x < G_y) { int tmp = G_x; G_x=G_y; G_y=tmp; } // for consistency in accessing _PredictGraph
     char *pColon = (ID2+IDlen-4); // prepare to nuke the : before q:r
     assert(*pColon == ':'); *pColon = '\0';
   #if COUNT_xy_only
-    sprintf(ID3, "%s:%d:%d", ID2, G_x,G_y); // becomes k:g:o:p:x:y, where x and y are from G (not g)
+    sprintf(ID3, "%s:%d:%d", ID2, G_x,G_y); // becomes k:o:p:x:y, where x and y are from G (not g)
   #else
-    sprintf(ID3, "%s:%d:%d:%d:%d", ID2, q,r,G_x,G_y);
+    sprintf(ID3, "%s:%d:%d:%d:%d", ID2, q,r,G_x,G_y); // k:o:p:q:r:x:y
   #endif
 #endif
     UpdateNodePair(_TraverseCanonicalPairs_G_u, _TraverseCanonicalPairs_G_v, ID3, *pCanonicalCount);
     return true;
 }
 
-#if PREDICT_USE_BINTREE
-
-typedef int Guv_Assoc_t;
 
 // Given a pair of nodes (u,v) in G and an association ID, increment the (u,v) count of that association by the count
 // of the ID. Note that unless RAW_COUNTS is true, this function is *only* used during merge mode (-mq).
 static void UpdateNodePair(int G_u, int G_v, char *ID, int count) {
-    Guv_Assoc_t *pUVassoc; // pointer to either a count, or sub-binary tree.
+    int *pUVassoc; // pointer to either a count, or sub-binary tree.
     if(G_u<G_v) { int tmp=G_u; G_u=G_v;G_v=tmp;}
-    if(_PredictGraph[G_u][G_v] == NULL) _PredictGraph[G_u][G_v] =
-	BinTreeAlloc((pCmpFcn) strcmp, (pFointCopyFcn) strdup, (pFointFreeFcn) free, NULL, NULL);
-    if(BinTreeLookup(_PredictGraph[G_u][G_v], (foint)(void*) ID, (void*) &pUVassoc))
+    if(_PredictGraph[G_u][G_v] == NULL)
+	_PredictGraph[G_u][G_v] = HTreeAlloc(1+!RAW_COUNTS); // depth 1 if RAW_COUNTS, or 2 for any COUNT_*xy
+    char buf[BUFSIZ], *IDarray[2];
+    IDarray[0] = strcpy(buf,ID);
+#if !RAW_COUNTS
+    // find the 3rd colon so we can isolate k:o:p from [q:r:]x:y
+    int i, G_x,G_y;
+    char *s=buf;
+    for(i=0;i<3;i++)while(*s++!=':') ;
+    assert(*--s==':'); *s++='\0';
+#if PARANOID_ASSERTS && COUNT_xy_only
+    assert(2==sscanf(s,"%d:%d",&G_x,&G_y)); assert(G_x > G_y);
+#endif
+    IDarray[1] = s; // the string [q:r:]x:y
+#endif
+    if(HTreeLookup(_PredictGraph[G_u][G_v], IDarray, (void*) &pUVassoc))
 	*pUVassoc += count;
     else {
 	pUVassoc = Omalloc(sizeof(int));
 	*pUVassoc = count;
-	BinTreeInsert(_PredictGraph[G_u][G_v], (foint)(void*) ID, (foint)(void*) pUVassoc);
+	HTreeInsert(_PredictGraph[G_u][G_v], IDarray, (foint)(void*) pUVassoc);
 #if PARANOID_ASSERTS
-	assert(BinTreeLookup(_PredictGraph[G_u][G_v], (foint)(void*) ID, (void*) &pUVassoc)
+	assert(HTreeLookup(_PredictGraph[G_u][G_v], IDarray, (void*) &pUVassoc)
 	    && *pUVassoc == count);
 #endif
     }
-    //printf("\t %s %d(%d)",ID, count, *pUVassoc);
+    //printf("P %s %s %d (%d)\n", PrintNodePairSorted(G_u,':',G_v), ID, count, *pUVassoc);
 }
-#else // !BINTREE
-void UpdateNodePair(int G_u, int G_v, char *ID, int count) {
-#error need to re-implement (or recover from repo or .vibak) slow, recursive non-canonical count for AWK version to work.
-}
-#endif
-
 
 
 /* This function is used to merge the types of lines above (u:v edge, k:g:i:j count, etc) from several
@@ -246,27 +254,9 @@ void Predict_ProcessLine(GRAPH *G, char line[])
     assert(*s0 == '\n');
 }
 
-// a slightly more compact internal representation of the char*ID above, because sometimes we want to see and
-// manipulate the values of g, i, and j, and it's cumbersome to extract them from a string (especially g).
-typedef struct {
-    short g; // the canonical ordinal (fits into short int)
-    char i,j; // the two canonical nodes (0 through k-1)
-} MOTIF_NODE_PAIR; // the count will be the "info" member of the binary tree node.
-
-// ensure nodes i and j are *actually* disconnected in the motif
-Boolean AssertMotifPairDisconnected(MOTIF_NODE_PAIR *op) {
-    int GintOrdinal = op->g;
-    int Gint = _canonList[GintOrdinal];
-    static TINY_GRAPH *g;
-    if(!g) g = TinyGraphAlloc(_k);  // only allocate this TinyGraph once, and re-use it each time.
-    Int2TinyGraph(g, Gint);
-    assert(!TinyGraphAreConnected(g,op->i,op->j));
-    return true;
-}
-
 
 /* Rather than explicitly enumerating the sub-motifs of every graphlet sampled from G, we do the recursive enumeration
-** of all motifs under a graphlet only one---on the canonical graphlet. Then we *store* the association between the
+** of all motifs under a graphlet only once---on the canonical graphlet. Then we *store* the association between the
 ** nodes of the canonical graphlet, and the motif associations. The associations get stored in a binary tree, one
 ** for each pair of canonical nodes in each canonical graphlet. Then, when we sample a graphlet from G, we simply
 ** determine what canonical it is using our standard BLANT lookup table _K, and use the perm[] matrix to transfer
@@ -293,58 +283,57 @@ void SubmotifIncrementCanonicalPairCounts(int topOrdinal, int Gint, TINY_GRAPH *
 #if PARANOID_ASSERTS
     assert(TinyGraph2Int(g,_k) == Gint);
 #endif
-    int o, p, GintOrdinal=_K[Gint];
+    int i, j, GintOrdinal=_K[Gint];
     char perm[MAX_K];
     memset(perm, 0, _k);
     ExtractPerm(perm, Gint);
-    for(o=1;o<_k;o++) for(p=0;p<o;p++) // all pairs of canonical nodes
+    for(i=1;i<_k;i++) for(j=0;j<i;j++) // all pairs of canonical nodes
     {
-	assert(_canonicalParticipationCounts[topOrdinal][o][p]);
-	int u=(int)perm[o], v=(int)perm[p]; // u and v in the *current* motif
-	// the association is between a node *pair* in the canonical top graphlet, and a node *pair* of the
-	// motif that they are participating in. Since the pair is undirected, we need to choose a unique order
-	// to use an a key, so we simply sort the pair.
-	// And since we want lower triangle, row > column, always, so o=1...n-1, p=0...o-1
-	if(u < v) { int tmp = u; u=v; v=tmp; }
-
-        // We are trying to determine the frequency that a pair of nodes in the topOrdinal have an edge based on their
+	// We are trying to determine the frequency that a pair of nodes in the topOrdinal have an edge based on their
 	// being located at a pair of canonical nodes in a sub-motif. The frequency only makes sense if the underlying
-        // edge between them can sometimes exist and sometimes not; but if TinyGraphAreConnected(u,v)=true, the edge
+	// edge between them can sometimes exist and sometimes not; but if TinyGraphAreConnected(u,v)=true, the edge
 	// already exists in this motif (and thus also in the topOrdinal) and there's nothing to predict. Thus, we only
 	// want to check this node pair if the motif does NOT have the edge. (Comment label: (+++))
+	int u=(int)perm[i], v=(int)perm[j]; // u and v in the *current* motif
         if(!TinyGraphAreConnected(g,u,v))
 	{
-	    MOTIF_NODE_PAIR op ={GintOrdinal,o,p}; // it's the canonical pair (o,p) of this motif, not (u,v).
-#if PARANOID_ASSERTS
-	    AssertMotifPairDisconnected(&op);
-#endif
+	    int o=_orbitList[GintOrdinal][i], p=_orbitList[GintOrdinal][j];
+	    // the association is between a node *pair* in the canonical top graphlet, and a node *pair* of the
+	    // motif that they are participating in. Since the pair is undirected, we need to choose a unique order
+	    // to use an a key, so we simply sort the pair.
+	    // And since we want lower triangle, row > column, always, so o=1...n-1, p=0...o-1
+	    if(u < v) { int tmp = u; u=v; v=tmp; }
+	    if(o < p) { int tmp = o; o=p; p=tmp; }
+	    assert(_canonicalParticipationCounts[topOrdinal][u][v]);
 	    int *pcount;
 	    char buf[BUFSIZ];
 #if RAW_COUNTS
-	    sprintf(buf,"%d:%d:%d:%d", _k, GintOrdinal,o,p);
+	    sprintf(buf,"%d:%d:%d", _k,o,p);
 #else
 	    int q,r;
 	    for(q=1;q<_k;q++) for(r=0;r<q;r++) if(q!=o || r!=p) {
 		int x=(int)perm[q], y=(int)perm[r];
 		if(TinyGraphAreConnected(g,x,y)) { // (x,y) only counts if it's an edge
   #if COUNT_xy_only
-		    sprintf(buf,"%d:%d:%d:%d:%d:%d", _k, GintOrdinal,o,p,x,y);
+		    sprintf(buf,"%d:%d:%d:%d:%d", _k,o,p,x,y);
   #else
-		    sprintf(buf,"%d:%d:%d:%d:%d:%d:%d:%d", _k, GintOrdinal,o,p,q,r,x,y);
+		    sprintf(buf,"%d:%d:%d:%d:%d:%d:%d", _k,o,p,q,r,x,y);
   #endif
 		}
 	    }
 #endif
-	    if(BinTreeLookup(_canonicalParticipationCounts[topOrdinal][o][p], (foint)(void*) buf, (void*) &pcount))
+	    if(BinTreeLookup(_canonicalParticipationCounts[topOrdinal][u][v], (foint)(void*) buf, (void*) &pcount))
 		++*pcount;
 	    else {
 		pcount = Omalloc(sizeof(int));
 		*pcount = 1;
-		BinTreeInsert(_canonicalParticipationCounts[topOrdinal][o][p], (foint)(void*) buf, (foint)(void*) pcount);
+		BinTreeInsert(_canonicalParticipationCounts[topOrdinal][u][v], (foint)(void*) buf, (foint)(void*) pcount);
 	    }
 #if 0
 	    int l,m;
-	    for(l=0;l<_k-1;l++) for(m=l+1;m<_k;m++) if(l!=o && m!=p && TinyGraphAreConnected(g,perm[l],perm[m])) {
+	    for(l=0;l<_k-1;l++) for(m=l+1;m<_k;m++) if(l!=i && m!=j && TinyGraphAreConnected(g,perm[l],perm[m])) {
+		int q=_orbitList[GintOrdinal][l];
+		int r=_orbitList[GintOrdinal][m];
 		int x=(int)perm[l];
 		int y=(int)perm[m];
 		if(x < y) { int tmp = x; x=y; y=tmp; }
@@ -441,7 +430,7 @@ void AccumulateGraphletParticipationCounts(GRAPH *G, unsigned Varray[], TINY_GRA
 
     for(i=1;i<_k;i++) for(j=0;j<i;j++) // loop through all pairs of nodes in the *canonical* version of the graphlet
     {
-	int g_u=perm[i], g_v=perm[j]; // o and p in the non-canonical motif g that is induced from G
+	int g_u=perm[i], g_v=perm[j]; // u and v in the non-canonical motif g that is induced from G
 	int G_u=Varray[g_u], G_v=Varray[g_v]; // u and v in the BIG input graph G.
 #if PARANOID_ASSERTS
         assert(!TinyGraphAreConnected(g,g_u,g_v) == !GraphAreConnected(G,G_u,G_v));
@@ -450,11 +439,10 @@ void AccumulateGraphletParticipationCounts(GRAPH *G, unsigned Varray[], TINY_GRA
 	// so we do not filter on the node pair being unconnected.
 	if(G_u < G_v) { int tmp = G_u; G_u=G_v; G_v=tmp; } // for consistency in accessing _PredictGraph
 	if(g_u < g_v) { int tmp = g_u; g_u=g_v; g_v=tmp; } // lower triangle of g
-#if PREDICT_USE_BINTREE
 	_TraverseCanonicalPairs_G_u = G_u; _TraverseCanonicalPairs_G_v = G_v;
 	_TraverseCanonicalPairs_Varray = Varray; _TraverseCanonicalPairs_perm = perm;
-	BinTreeTraverse(_canonicalParticipationCounts[GintOrdinal][g_u][g_v], TraverseCanonicalPairs);
-#else
+	BinTreeTraverse(_canonicalParticipationCounts[GintOrdinal][i][j], TraverseCanonicalPairs);
+#if 0
 	int l,m;
 	for(l=1;l<_k;l++) for(m=0;m<l;m++) if(l!=i && m!=j && TinyGraphAreConnected(g,perm[l],perm[m])) {
 	    int q=perm[l], r=perm[m];
@@ -470,7 +458,7 @@ void AccumulateGraphletParticipationCounts(GRAPH *G, unsigned Varray[], TINY_GRA
 #endif
     }
 
-#if PREDICT_USE_BINTREE
+#if 0 //PREDICT_USE_TREE && have _THREADS
     Boolean debug = false;
     if(_child && _flushCounts) {
 	fprintf(stderr, "Flushing child %d\n", getpid());

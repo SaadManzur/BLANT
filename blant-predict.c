@@ -44,6 +44,10 @@ static BINTREE *_predictiveOrbits; // if non-NULL, any orbit not in this diction
 // 0.1s, and below we check it to see if it's time to flush our counts.
 static Boolean _flushCounts = true;
 
+#if __APPLE__
+typedef sig_t __sighandler_t;
+#endif
+
 // Signal handler for the SIGALRM that occurs periodically forcing us to flush our counts to a parent (if we're _child).
 int AlarmHandler(int sig)
 {
@@ -63,6 +67,7 @@ int AlarmHandler(int sig)
     }
     signal(SIGALRM, (__sighandler_t) AlarmHandler);
     alarm(1);
+    return 0;
 }
 
 // Allocate the NULL pointers for just the *rows* of the PredictGraph[i].

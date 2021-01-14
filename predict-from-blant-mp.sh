@@ -1,5 +1,5 @@
 #!/bin/sh
-USAGE="$0 [-include-known] blant-mp-file
+USAGE="$0 [-predictors-only] [-include-known] blant-mp-file
 PURPOSE: given a blant-mp output file, learn which motifs have predictive value, and then use the precision curves to
 create a list of predictions sorted best-to-worst. By default, we only output predictions on the set of node pairs
 that had *no* edge in the blast-mp file; these are genuine predictions. If the '-include-known' option is given, then
@@ -9,15 +9,20 @@ the training data."
 die(){ (echo "$USAGE"; echo "FATAL ERROR: $@")>&2; exit 1; }
 
 INCLUDE_KNOWN=0
+PREDICTORS_ONLY=0
+MINIMUMS="min_samples=1000; min_rho=0.1; min_t=10; min_p=0.8" # stringent, used for actual prediction
 while [ $# -gt 1 ]; do
     case "$1" in
     -include-known) INCLUDE_KNOWN=1; shift;;
+    -predictors-only) PREDICTORS_ONLY=1; shift
+	MINIMUMS="min_samples=100; min_rho=0.01; min_t=5; min_p=0.1" # less stringent, just for detection
+	;;
     -*) die "unknown option '$1'";;
     *) break;;
     esac
 done
 
-[ $# -le 1 ] || die "expecting a blant-mp output file"
+[ $# -ge 1 ] || die "expecting a blant-mp output file"
 
 TMPDIR=`mktemp -d /tmp/predict-from-blant-mp.XXXXXX`
 trap "/bin/rm -rf $TMPDIR; exit" 0 1 2 3 15 # call trap "" N to remove the trap for signal N
@@ -29,7 +34,7 @@ cat "$@" > $TMPDIR/input
 # where the colon word is k:g:i:j (g=graphlet Ordinal, i,j is a node (NOT ORBIT) pair in g.), followed by a count.
 # We call (i,j) a "canonical node pair", or cnp for short.
 
-hawk 'BEGIN{min_samples=1000; min_rho=0.1; min_t=6; min_p=0.8} # THESE MAY NEED TO BE ADJUSTED
+hawk 'BEGIN{'"$MINIMUMS"'}
     ARGIND==1{
 	uv=$1 # node pair
 	E[uv]=e=$2 # edge Boolean
@@ -65,6 +70,7 @@ hawk 'BEGIN{min_samples=1000; min_rho=0.1; min_t=6; min_p=0.8} # THESE MAY NEED 
 		    print PearsonPrint(cnp),cnp,maxP[cnp] > "/dev/stderr"
 	    }
 	}
+	if('$PREDICTORS_ONLY')exit(0);
     }}
     ARGIND==2{ # actually the same file, just that we go through it now creating predictions
 	uv=$1 # node pair

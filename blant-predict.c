@@ -8,6 +8,7 @@
 #include <math.h>
 #include <signal.h>
 #include <ctype.h>
+#include <unistd.h>
 
 // Watch memory usage
 #include <sys/time.h>
@@ -29,6 +30,7 @@
 // orbit pair (o,p) from graphlet K, and the second key is any edge in any graphlet K; we then use the
 // total number of edges from G seen in any graphlet K to compute the weight of u:v's o:p orbit pair.
 static HTREE ***_PredictGraph; // lower-triangular matrix (ie., j<i, not i<j) of dictionary entries
+static BINTREE *_predictiveOrbits; // if non-NULL, any orbit not in this dictionary is ignored.
 
 // Is is there anything in _PredictGraph[i][j]?
 #define PREDICT_GRAPH_NON_EMPTY(i,j) (_PredictGraph[i][j] && _PredictGraph[i][j]->tree->root)
@@ -47,7 +49,7 @@ int AlarmHandler(int sig)
 {
     //assert(_child && !_flushCounts);
     //fprintf(stderr, "Alarm in process %d\n", getpid());
-    ualarm(0);
+    alarm(0);
     _flushCounts = true;
     static struct rusage usage;
     int status = getrusage(RUSAGE_SELF, &usage);
@@ -69,6 +71,21 @@ void Predict_Init(GRAPH *G) {
     // This just allocates the NULL pointers, no actual binary trees are created yet.
     _PredictGraph = Calloc(G->n, sizeof(HTREE**)); // we won't use element 0 but still need n of them
     for(i=1; i<G->n; i++) _PredictGraph[i] = Calloc(i, sizeof(HTREE*));
+
+    char *predictive = getenv("PREDICTIVE_ORBITS");
+    if(predictive) {
+	int numPredictive=0;
+	_predictiveOrbits = BinTreeAlloc((pCmpFcn) strcmp, (pFointCopyFcn) strdup, (pFointFreeFcn) free, NULL, NULL);
+	FILE *fp = Fopen(predictive,"r");
+	char buf[BUFSIZ];
+	while(1==fscanf(fp,"%s",buf))
+	{
+	    ++numPredictive;
+	    BinTreeInsert(_predictiveOrbits, (foint) buf, (foint) NULL);
+	}
+	fprintf(stderr, "Read %d predictive orbits from file %s\n", numPredictive, predictive);
+    }
+
     signal(SIGALRM, (__sighandler_t) AlarmHandler);
     alarm(1);  // (int)(2*_MAX_THREADS*drand48())); // on average, have one child per second send data to the parent process
 }
@@ -94,16 +111,16 @@ void Predict_Init(GRAPH *G) {
 ** Note that (o,p,q,r) has exactly (k choose 2)^2 possible values [or just (k choose 2) if we ignore (q,r).].
 ** At k=8 that's only 784 [28] possible values, and we only need to remember a BOOLEAN of each.
 ** Thus, we'll represent whether we've seen (o,p,q,r) as a SET*, which will require
-** about 100 bytes total. Given (o,p,q,r) we'll convert (o,p) to int via creating an empty TinyGraph, adding (o,p),
+** about 100 [4] bytes total. Given (o,p,q,r) we'll convert (o,p) to int via creating an empty TinyGraph, adding (o,p),
 ** then op=TinyGraphToInt; same with (q,r) giving qr; finally opqr=op*(k choose2) + qr.
-** Then, to fully encode the (u,v,o,p,q,r,x,y) octuplet, we'll keep the _PredictGraph[u][v]
-** binary trees, but now the *key* will simply be "x:y", the "internal edge", and then the octuplet can be queried
-** as: key = BinaryTreeLookup(PG[u][v], "x:y"); SET *uvxy=(SET*) key; and finally SetAdd(uvxy,opqr).
-** Finally retrieving and printing the output will be need us, for each (u,v) pair, to traverse its binary tree
-** across all (x,y) pairs, accumulating sum[qr] += !!SetIn(uvxy, opqr) (!! to ensure it's 0 or 1).
+** Then, to fully encode the (u,v,o,p,q,r,x,y) octuplet [sextuplet], we'll keep the _PredictGraph[u][v]
+** binary trees, but now the *key* will simply be "x:y", the "internal edge", and then the octuplet [sextuplet]
+** can be queried as: key = BinaryTreeLookup(PG[u][v], "x:y"); SET *uvxy=(SET*) key; and finally SetAdd(uvxy,opqr).
+** Finally retrieving and printing the output will require, for each (u,v) pair, to traverse its binary
+** tree across all (x,y) pairs, accumulating sum[qr] += !!SetIn(uvxy, opqr) (!! to ensure it's 0 or 1).
 ** In English, that's saying: for a given (u,v) pair, its value at CNP (o,p) is the sum, across all (x,y)
-** edges that have been observed in the same sampled graphlet, of whether (x,y) has appeared at CNP (q,r).
-** (1 if yes, 0 if no).
+** edges that have been observed in the same sampled graphlet, of [1 if ignoring qr, or] whether (x,y) has
+** appeared at CNP (q,r). (1 if yes, 0 if no).
 */
 #define RAW_COUNTS 0 // this works OK but COUNT_xy_only works better
 #if !RAW_COUNTS
@@ -143,7 +160,7 @@ Boolean TraverseNodePairCounts(foint key, foint data) {
 ** the pair of nodes, the edge truth, and all the participation counts.
 */
 void PredictFlushAllCounts(GRAPH *G){
-    if(_child) ualarm(0); // turn off _flushCounts alarm
+    if(_child) alarm(0); // turn off _flushCounts alarm
     int i,j;
     for(i=1; i < G->n; i++) for(j=0; j<i; j++) {
 	if(PREDICT_GRAPH_NON_EMPTY(i,j))  // only output node pairs with non-zero counts
@@ -245,8 +262,10 @@ static void UpdateNodePair(int G_u, int G_v, char *ID, int count) {
 void Predict_ProcessLine(GRAPH *G, char line[])
 {
     assert(!_child);
-    if(line[strlen(line)-1] != '\n')
-	Fatal("char line[%s] buffer not long enough while reading child line in -mp mode",sizeof(line));
+    if(line[strlen(line)-1] != '\n') {
+	assert(line[strlen(line)-1] == '\0');
+	Fatal("char line[%s] buffer not long enough while reading child line in -mp mode",line);
+    }
     char *s0=line, *s1=s0;
     foint fu, fv;
     int G_u, G_v;
@@ -342,7 +361,8 @@ void SubmotifIncrementCanonicalPairCounts(int topOrdinal, int Gint, TINY_GRAPH *
 	    if(o < p) { int tmp = o; o=p; p=tmp; }
 	    assert(_canonicalParticipationCounts[topOrdinal][u][v]);
 	    int *pcount;
-	    char buf[BUFSIZ];
+	    char buf[BUFSIZ], buf_kop_only[BUFSIZ];
+	    sprintf(buf_kop_only,"%d:%d:%d", _k,o,p);
 #if RAW_COUNTS
 	    sprintf(buf,"%d:%d:%d", _k,o,p);
 #else
@@ -358,25 +378,27 @@ void SubmotifIncrementCanonicalPairCounts(int topOrdinal, int Gint, TINY_GRAPH *
 		}
 	    }
 #endif
-	    if(BinTreeLookup(_canonicalParticipationCounts[topOrdinal][u][v], (foint)(void*) buf, (void*) &pcount))
-		++*pcount;
-	    else {
-		pcount = Omalloc(sizeof(int));
-		*pcount = 1;
-		BinTreeInsert(_canonicalParticipationCounts[topOrdinal][u][v], (foint)(void*) buf, (foint)(void*) pcount);
+	    if(!_predictiveOrbits || BinTreeLookup(_predictiveOrbits, (foint)(void*) buf_kop_only, (void*) NULL)) {
+		if(BinTreeLookup(_canonicalParticipationCounts[topOrdinal][u][v], (foint)(void*) buf, (void*) &pcount))
+		    ++*pcount;
+		else {
+		    pcount = Omalloc(sizeof(int));
+		    *pcount = 1;
+		    BinTreeInsert(_canonicalParticipationCounts[topOrdinal][u][v], (foint)(void*) buf, (foint)(void*) pcount);
+		}
+    #if 0
+		int l,m;
+		for(l=0;l<_k-1;l++) for(m=l+1;m<_k;m++) if(l!=i && m!=j && TinyGraphAreConnected(g,perm[l],perm[m])) {
+		    int q=_orbitList[GintOrdinal][l];
+		    int r=_orbitList[GintOrdinal][m];
+		    int x=(int)perm[l];
+		    int y=(int)perm[m];
+		    if(x < y) { int tmp = x; x=y; y=tmp; }
+		    if(r < q) { int tmp = q; q=r; r=tmp; }
+		    // increase the count of octuplet (u,v, o,p, q,r, x,y)
+		}
+    #endif
 	    }
-#if 0
-	    int l,m;
-	    for(l=0;l<_k-1;l++) for(m=l+1;m<_k;m++) if(l!=i && m!=j && TinyGraphAreConnected(g,perm[l],perm[m])) {
-		int q=_orbitList[GintOrdinal][l];
-		int r=_orbitList[GintOrdinal][m];
-		int x=(int)perm[l];
-		int y=(int)perm[m];
-		if(x < y) { int tmp = x; x=y; y=tmp; }
-		if(r < q) { int tmp = q; q=r; r=tmp; }
-		// increase the count of octuplet (u,v, o,p, q,r, x,y)
-	    }
-#endif
         }
     }
 }

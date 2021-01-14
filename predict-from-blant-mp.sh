@@ -10,7 +10,7 @@ die(){ (echo "$USAGE"; echo "FATAL ERROR: $@")>&2; exit 1; }
 
 INCLUDE_KNOWN=0
 PREDICTORS_ONLY=0
-MINIMUMS="min_samples=1000; min_rho=0.1; min_t=10; min_p=0.8" # stringent, used for actual prediction
+MINIMUMS="min_samples=10000; min_rho=0.1; min_t=100; min_p=0.7" # very stringent, used for actual prediction
 while [ $# -gt 1 ]; do
     case "$1" in
     -include-known) INCLUDE_KNOWN=1; shift;;
@@ -37,12 +37,15 @@ cat "$@" > $TMPDIR/input
 hawk 'BEGIN{'"$MINIMUMS"'}
     ARGIND==1{
 	uv=$1 # node pair
-	E[uv]=e=$2 # edge Boolean
+	ASSERT(2==split(uv,a,":"),"first column not colon-separated");
+	u=a[1]; v=a[2]; ASSERT(u>v,"u and v in wrong order");
+	++degree[u]; ++degree[v];
 	ASSERT($2==0 || $2==1, "expecting second column to be Boolean");
+	E[uv]=e[u][v]=$2 # edge Boolean
 	for(i=3;i<NF;i+=2){ #col 3 onwards are (cnp,count) pairs
 	    cnp=$i; c=$(i+1)
-	    PearsonAddSample(cnp,c,e);
-	    ++hist[cnp][c][e]; # histogram: number of times orbit-pair $i had exactly count c for edge truth "e"
+	    PearsonAddSample(cnp,c,E[uv]);
+	    ++hist[cnp][c][E[uv]]; # histogram: number of times orbit-pair $i had exactly count c for edge truth "e"
 	    if(c>max[cnp])max[cnp]=c
 	}
     }
@@ -74,7 +77,9 @@ hawk 'BEGIN{'"$MINIMUMS"'}
     }}
     ARGIND==2{ # actually the same file, just that we go through it now creating predictions
 	uv=$1 # node pair
-	p1=0; e=$2;
+	ASSERT(2==split(uv,a,":"),"first column not colon-separated");
+	u=a[1]; v=a[2]; ASSERT(u>v,"u and v in wrong order");
+	p1=0;
 	c=0; bestCol="none";
 	for(i=3;i<NF;i+=2){
 	    cnp=$i; c=$(i+1);

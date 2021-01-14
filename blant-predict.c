@@ -55,9 +55,10 @@ int AlarmHandler(int sig)
     int status = getrusage(RUSAGE_SELF, &usage);
     assert(status == 0);
     //Warning("res %g drss %g srss %g", usage.ru_maxrss/1e6, usage.ru_idrss/1.0, usage.ru_isrss/1.0);
-    if(usage.ru_maxrss > (long)25e6 || (usage.ru_idrss+usage.ru_isrss)>(long)30e6)
+#define MAX_GB 75
+    if(usage.ru_maxrss > (long)(1024*1024*MAX_GB) || (usage.ru_idrss+usage.ru_isrss)>(long)(1024*1024*(MAX_GB+5)))
     {
-	Warning("WARNING: Resident memory usage has reached %g GB", usage.ru_maxrss/1e6);
+	Warning("WARNING: Resident memory usage has reached %g GB", usage.ru_maxrss/(1024.0*1024.0));
 	_memUsageAlarm=true;
     }
     signal(SIGALRM, (__sighandler_t) AlarmHandler);
@@ -76,14 +77,36 @@ void Predict_Init(GRAPH *G) {
     if(predictive) {
 	int numPredictive=0;
 	_predictiveOrbits = BinTreeAlloc((pCmpFcn) strcmp, (pFointCopyFcn) strdup, (pFointFreeFcn) free, NULL, NULL);
-	FILE *fp = Fopen(predictive,"r");
-	char buf[BUFSIZ];
-	while(1==fscanf(fp,"%s",buf))
-	{
-	    ++numPredictive;
-	    BinTreeInsert(_predictiveOrbits, (foint) buf, (foint) NULL);
+	// Is it a string containing orbits, or a filename?
+	char *s = predictive;
+	// The only characters allowed in orbit lists are digits, spaces, and colons.
+	while(*s && (isdigit(*s) || isspace(*s) || *s == ':')) s++;
+	if(*s) { // we found a bad character, it's a filename
+	    FILE *fp = Fopen(predictive,"r");
+	    char buf[BUFSIZ];
+	    while(1==fscanf(fp,"%s",buf))
+	    {
+		++numPredictive;
+		BinTreeInsert(_predictiveOrbits, (foint) buf, (foint) NULL);
+	    }
+	    fprintf(stderr, "Read %d predictive orbits from file %s\n", numPredictive, predictive);
+	} else { // we got to the end of the string, it's a raw list of orbits
+	    FILE *fp = fopen(predictive,"r");
+	    if(fp) Fatal("PREDICTIVE_ORBITS <%s> looks like a list of orbits but there's also a file by that name", predictive);
+	    fprintf(stderr, "Reading $PREDICTIVE_ORBITS: <%s>\n", predictive);
+	    s=predictive;
+	    while(*s)
+	    {
+		while(isspace(*s)) s++; // get past whitespace
+		if(!*s) break;
+		predictive = s;
+		while(*s && !isspace(*s)) s++; // get to next whitespace
+		if(isspace(*s)) *s++ = '\0'; // terminate the string
+		++numPredictive;
+		BinTreeInsert(_predictiveOrbits, (foint) predictive, (foint) NULL);
+	    }
+	    fprintf(stderr, "Read %d orbits from $PREDICTIVE_ORBITS\n", numPredictive);
 	}
-	fprintf(stderr, "Read %d predictive orbits from file %s\n", numPredictive, predictive);
     }
 
     signal(SIGALRM, (__sighandler_t) AlarmHandler);

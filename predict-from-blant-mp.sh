@@ -1,5 +1,5 @@
 #!/bin/sh
-USAGE="$0 [-predictors-only] [-include-known] blant-mp-file
+USAGE="$0 [-evaluate TestEdgeList.el] [-predictors-only] [-include-known] blant-mp-file
 PURPOSE: given a blant-mp output file, learn which motifs have predictive value, and then use the precision curves to
 create a list of predictions sorted best-to-worst. By default, we only output predictions on the set of node pairs
 that had *no* edge in the blast-mp file; these are genuine predictions. If the '-include-known' option is given, then
@@ -10,6 +10,7 @@ die(){ (echo "$USAGE"; echo "FATAL ERROR: $@")>&2; exit 1; }
 
 INCLUDE_KNOWN=0
 PREDICTORS_ONLY=0
+EVALUATE=''
 MINIMUMS="min_samples=10000; min_rho=0.1; min_t=100; min_p=0.7" # very stringent, used for actual prediction
 while [ $# -gt 1 ]; do
     case "$1" in
@@ -17,6 +18,7 @@ while [ $# -gt 1 ]; do
     -predictors-only) PREDICTORS_ONLY=1; shift
 	MINIMUMS="min_samples=100; min_rho=0.01; min_t=5; min_p=0.1" # less stringent, just for detection
 	;;
+    -eval*) EVALUATE="$2"; shift 2;;
     -*) die "unknown option '$1'";;
     *) break;;
     esac
@@ -27,7 +29,7 @@ done
 TMPDIR=`mktemp -d /tmp/predict-from-blant-mp.XXXXXX`
 trap "/bin/rm -rf $TMPDIR; exit" 0 1 2 3 15 # call trap "" N to remove the trap for signal N
 
-cat "$@" > $TMPDIR/input
+wzcat "$@" > $TMPDIR/input
 
 # input lines look like:
 #ENSG00000197362:ENSG00000204178 0	4:9:0:4 4	4:5:1:2 46	4:6:0:3 6	4:7:1:2 2	[ etc ... ]
@@ -51,7 +53,7 @@ hawk 'BEGIN{'"$MINIMUMS"'}
     }
     ENDFILE{if(ARGIND==1){
 	# Now produce empirical precision curve as a function of orbit-pair count (c), for each orbit-pair
-	printf("Predictive stats for %s\n", FILENAME) > "/dev/stderr"
+	printf("Predictive stats for '"$*"'\n") > "/dev/stderr"
 	for(cnp in hist) {
 	    for(c=max[cnp];c>=0; --c) { # starting at the highest orbit-pair counts
 		numer[cnp][c]+=hist[cnp][c][1]; # those that actually had edge
@@ -90,5 +92,9 @@ hawk 'BEGIN{'"$MINIMUMS"'}
 	}
 	if(p1>min_p && E[uv]<='$INCLUDE_KNOWN') printf "%s\t%g\tbestCol %s\t[%s]\n",uv,p1,bestCol,$0
     }' "$TMPDIR/input" "$TMPDIR/input" | # yes, twice
-    sort -S4G -k 2gr -k 4nr #|
-    #awk '{sum+=$6; printf "%d prec %g %s\n", NR, sum/NR,$0}'
+    sort -S4G -k 2gr -k 4nr |
+    if [ "$EVALUATE" = "" ]; then
+	cat
+    else
+	awk 'ARGIND==1{E[$1][$2]=E[$2][$1]=1}ARGIND==2{split($1,a,":"); if((a[1] in E) && (a[2] in E[a[1]]))++sum; printf "%d prec %g %s\n", FNR, sum/FNR,$0}' "$EVALUATE" -
+    fi

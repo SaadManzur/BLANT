@@ -55,7 +55,7 @@ int AlarmHandler(int sig)
     int status = getrusage(RUSAGE_SELF, &usage);
     assert(status == 0);
     //Warning("res %g drss %g srss %g", usage.ru_maxrss/1e6, usage.ru_idrss/1.0, usage.ru_isrss/1.0);
-#define MAX_GB 75
+#define MAX_GB 8
     if(usage.ru_maxrss > (long)(1024*1024*MAX_GB) || (usage.ru_idrss+usage.ru_isrss)>(long)(1024*1024*(MAX_GB+5)))
     {
 	Warning("WARNING: Resident memory usage has reached %g GB", usage.ru_maxrss/(1024.0*1024.0));

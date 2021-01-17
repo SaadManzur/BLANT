@@ -77,8 +77,8 @@ for k
 do
     [ 4 -le $k -a $k -le 8 ] || die "k values must be between 4 and 8"
     threads=1 # below is the approximate relative expense compared to k=4
-    expense=`echo $k | awk '{prod=1; K=$1; for(k=4;k<K;k++)prod *= sqrt(2)*(k-1)*(k-2)*(k-3); print int(prod)}'`
-    [ "$expense" -gt $M ] && threads=`parse "MAX(1,int($expense/$M/100))"`
+    #expense=`echo $k | awk '{prod=1; K=$1; for(k=4;k<K;k++)prod *= sqrt(2)*(k-1)*(k-2)*(k-3); print int(prod)}'`
+    #[ "$expense" -gt $M ] && threads=`parse "MAX(1,int($expense/$M/100))"`
     samplesPerThread=`parse "int($M$Z/$threads)"`
     #echo "Relative expense is $expense with so $threads threads needed for k=$k" >&2
     for DUP in `seq 1 $threads`; do

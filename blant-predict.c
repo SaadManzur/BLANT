@@ -44,8 +44,14 @@ static BINTREE *_predictiveOrbits; // if non-NULL, any orbit not in this diction
 // 0.1s, and below we check it to see if it's time to flush our counts.
 static Boolean _flushCounts = true;
 
+#define GB (1024*1024*1024L)
 #if __APPLE__
 typedef sig_t __sighandler_t;
+#define RUSAGE_MEM_UNIT 1L  // units of bytes
+#define MAX_GB 4
+#else
+#define RUSAGE_MEM_UNIT (1024L*1024) // units of MB
+#define MAX_GB 16
 #endif
 
 void CheckRAMusage(void)
@@ -53,13 +59,12 @@ void CheckRAMusage(void)
     static struct rusage usage;
     int status = getrusage(RUSAGE_SELF, &usage);
     assert(status == 0);
-    //Warning("res %g drss %g srss %g", usage.ru_maxrss/1e6, usage.ru_idrss/1.0, usage.ru_isrss/1.0);
-#define MAX_GB 16
-    if(usage.ru_maxrss > (long)(1024*1024*MAX_GB) || (usage.ru_idrss+usage.ru_isrss)>(long)(1024*1024*(MAX_GB+5)))
+    //Warning("res %d drss %g srss %g", usage.ru_maxrss, usage.ru_idrss/1.0, usage.ru_isrss/1.0);
+    if(usage.ru_maxrss*RUSAGE_MEM_UNIT > (GB*MAX_GB) || (usage.ru_idrss+usage.ru_isrss)>(long)(1024*1024*(MAX_GB+5)))
     {
-	double new=usage.ru_maxrss/(1024.0*1024.0);
+	double new=usage.ru_maxrss*(double)RUSAGE_MEM_UNIT/GB;
 	static double previous;
-	if(new > previous) {
+	if(new > 1.1*previous) {
 	    Warning("WARNING: Resident memory usage has reached %g GB", new);
 	    previous = new;
 	}

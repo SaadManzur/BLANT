@@ -17,13 +17,20 @@
 // Reasonable Defaults for a Mac with 16GB RAM since it's too much trouble to find the real values.
 static double totalGB = 16, freeGB = 8, MAX_GB;
 
-#define GB (1024*1024*1024L)
+#define GB (1024.0*1024.0*1024.0)
 typedef sig_t sighandler_t;
 #if __APPLE__
-  #define RUSAGE_MEM_UNIT 1L  // units of bytes
+  #define RUSAGE_MEM_UNIT 1L
+  #define SYSINFO_MEM_UNIT 1L
 #else
   #include <sys/sysinfo.h>
-  #define RUSAGE_MEM_UNIT (1024L) // units of kB
+  #if __WIN32__ || __CYGWIN__
+    #define SYSINFO_MEM_UNIT 4096L  // 4k unit???
+    #define RUSAGE_MEM_UNIT 4096L  // 4k page
+  #else
+    #define SYSINFO_MEM_UNIT 1L
+    #define RUSAGE_MEM_UNIT (1024L) // units of kB
+  #endif
 #endif
 
 void CheckRAMusage(void)
@@ -34,15 +41,16 @@ void CheckRAMusage(void)
     static struct sysinfo info;
     status = sysinfo(&info);
     assert(status == 0);
-    totalGB = info.totalram*1.0/GB; 
-    freeGB = info.freeram*1.0/GB;
+    //Note("RAW sysinfo data: totalram %ld freeram %ld\n", info.totalram, info.freeram);
+    totalGB = info.totalram*1.0*SYSINFO_MEM_UNIT/GB; 
+    freeGB = info.freeram*1.0*SYSINFO_MEM_UNIT/GB;
 #endif
     MAX_GB=MIN(totalGB/2, freeGB-4); // at most half the machine's RAM, and leaving at least 4GB free
-    if(!usage.ru_maxrss) Note("System claims to have totalram %f GB, freeram %f GB; aiming to use MAX %g GB",
+    if(!usage.ru_maxrss) Note("System claims to have totalram %g GB, freeram %g GB; aiming to use MAX %g GB",
 	totalGB, freeGB, MAX_GB);
     status = getrusage(RUSAGE_SELF, &usage);
     assert(status == 0);
-    //Note("res %f drss %f srss %f", 1.0*usage.ru_maxrss*RUSAGE_MEM_UNIT/GB, 1.0*usage.ru_idrss*RUSAGE_MEM_UNIT/GB, 1.0*usage.ru_isrss*RUSAGE_MEM_UNIT/GB);
+    //Note("RAW rusage data: res %ld drss %ld srss %ld", usage.ru_maxrss, usage.ru_idrss, usage.ru_isrss);
     if(usage.ru_maxrss*RUSAGE_MEM_UNIT/GB > MAX_GB || (usage.ru_idrss+usage.ru_isrss)*RUSAGE_MEM_UNIT/GB > MAX_GB)
     {
 	double new=usage.ru_maxrss*(double)RUSAGE_MEM_UNIT/GB;
@@ -50,7 +58,7 @@ void CheckRAMusage(void)
 	if(new > 1.1*previous) {
 #if !__APPLE__
 	    status = sysinfo(&info);
-	    freeGB = info.freeram*1.0/GB;
+	    freeGB = info.freeram*SYSINFO_MEM_UNIT/GB;
 #endif
 	    Warning("WARNING: Resident memory usage has reached %g GB with %g GB remaining free", new, freeGB);
 	    previous = new;

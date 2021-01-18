@@ -96,7 +96,7 @@ hawk 'function WeightToBin(w){return int(100*w);} # because weights are floats b
 	}
 	if(p1>min_p && E[uv]<='$INCLUDE_KNOWN') printf "%s\t%g\tbestCol %s\t[%s]\n",uv,p1,bestCol,$0
     }' "$TMPDIR/input" "$TMPDIR/input" | # yes, twice
-    sort -S4G -k 2gr -k 4nr |
+    sort -k 2gr -k 4nr |
     if [ "$EVALUATE" = "" ]; then
 	cat
     else

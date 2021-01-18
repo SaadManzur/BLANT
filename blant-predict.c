@@ -46,12 +46,12 @@ static Boolean _flushCounts = true;
 
 #define GB (1024*1024*1024L)
 #if __APPLE__
-typedef sig_t __sighandler_t;
-#define RUSAGE_MEM_UNIT 1L  // units of bytes
-#define MAX_GB 4
+  typedef sig_t __sighandler_t;
+  #define RUSAGE_MEM_UNIT 1L  // units of bytes
+  #define MAX_GB 4
 #else
-#define RUSAGE_MEM_UNIT (1024L*1024) // units of MB
-#define MAX_GB 16
+  #define RUSAGE_MEM_UNIT (1024L) // units of kB
+  #define MAX_GB 24
 #endif
 
 void CheckRAMusage(void)

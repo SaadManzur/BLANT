@@ -38,7 +38,7 @@ void CheckRAMusage(void)
     freeGB = info.freeram*1.0/GB;
 #endif
     MAX_GB=MIN(totalGB/2, freeGB-4); // at most half the machine's RAM, and leaving at least 4GB free
-    if(!usage.ru_maxrss) Note("System claims to have totalram %f GB, freeram %f GB; aiming to use MAX %g GB \n",
+    if(!usage.ru_maxrss) Note("System claims to have totalram %f GB, freeram %f GB; aiming to use MAX %g GB",
 	totalGB, freeGB, MAX_GB);
     status = getrusage(RUSAGE_SELF, &usage);
     assert(status == 0);

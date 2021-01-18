@@ -18,8 +18,8 @@
 static double totalGB = 16, freeGB = 8, MAX_GB;
 
 #define GB (1024*1024*1024L)
+typedef sig_t sighandler_t;
 #if __APPLE__
-  typedef sig_t __sighandler_t;
   #define RUSAGE_MEM_UNIT 1L  // units of bytes
 #else
   #include <sys/sysinfo.h>
@@ -97,7 +97,7 @@ int AlarmHandler(int sig)
     alarm(0);
     CheckRAMusage();
     if(_child) _flushCounts = true;
-    signal(SIGALRM, (__sighandler_t) AlarmHandler);
+    signal(SIGALRM, (sighandler_t) AlarmHandler);
     alarm(1); // set alarm for 1 second hence
     return 0;
 }
@@ -146,7 +146,7 @@ void Predict_Init(GRAPH *G) {
     }
 
     if(_child) {
-	signal(SIGALRM, (__sighandler_t) AlarmHandler);
+	signal(SIGALRM, (sighandler_t) AlarmHandler);
 	alarm(1);  // (int)(2*_MAX_THREADS*drand48())); // on average, have one child per second send data to the parent process
     }
 }

@@ -48,25 +48,35 @@ static Boolean _flushCounts = true;
 typedef sig_t __sighandler_t;
 #endif
 
+void CheckRAMusage(void)
+{
+    static struct rusage usage;
+    int status = getrusage(RUSAGE_SELF, &usage);
+    assert(status == 0);
+    //Warning("res %g drss %g srss %g", usage.ru_maxrss/1e6, usage.ru_idrss/1.0, usage.ru_isrss/1.0);
+#define MAX_GB 16
+    if(usage.ru_maxrss > (long)(1024*1024*MAX_GB) || (usage.ru_idrss+usage.ru_isrss)>(long)(1024*1024*(MAX_GB+5)))
+    {
+	double new=usage.ru_maxrss/(1024.0*1024.0);
+	static double previous;
+	if(new > previous) {
+	    Warning("WARNING: Resident memory usage has reached %g GB", new);
+	    previous = new;
+	}
+	_memUsageAlarm=true;
+    }
+}
+
 // Signal handler for the SIGALRM that occurs periodically forcing us to flush our counts to a parent (if we're _child).
 int AlarmHandler(int sig)
 {
     //assert(_child && !_flushCounts);
     //fprintf(stderr, "Alarm in process %d\n", getpid());
     alarm(0);
-    _flushCounts = true;
-    static struct rusage usage;
-    int status = getrusage(RUSAGE_SELF, &usage);
-    assert(status == 0);
-    //Warning("res %g drss %g srss %g", usage.ru_maxrss/1e6, usage.ru_idrss/1.0, usage.ru_isrss/1.0);
-#define MAX_GB 8
-    if(usage.ru_maxrss > (long)(1024*1024*MAX_GB) || (usage.ru_idrss+usage.ru_isrss)>(long)(1024*1024*(MAX_GB+5)))
-    {
-	Warning("WARNING: Resident memory usage has reached %g GB", usage.ru_maxrss/(1024.0*1024.0));
-	_memUsageAlarm=true;
-    }
+    CheckRAMusage();
+    if(_child) _flushCounts = true;
     signal(SIGALRM, (__sighandler_t) AlarmHandler);
-    alarm(1);
+    alarm(1); // set alarm for 1 second hence
     return 0;
 }
 
@@ -86,11 +96,10 @@ void Predict_Init(GRAPH *G) {
 	char *s = predictive;
 	// The only characters allowed in orbit lists are digits, spaces, and colons.
 	while(*s && (isdigit(*s) || isspace(*s) || *s == ':')) s++;
-	if(*s) { // we found a bad character, it's a filename
+	if(*s) { // we found an invalid orbit-descriptor character; assume it's a filename
 	    FILE *fp = Fopen(predictive,"r");
 	    char buf[BUFSIZ];
-	    while(1==fscanf(fp,"%s",buf))
-	    {
+	    while(1==fscanf(fp,"%s",buf)) {
 		++numPredictive;
 		BinTreeInsert(_predictiveOrbits, (foint) buf, (foint) NULL);
 	    }
@@ -114,8 +123,10 @@ void Predict_Init(GRAPH *G) {
 	}
     }
 
-    signal(SIGALRM, (__sighandler_t) AlarmHandler);
-    alarm(1);  // (int)(2*_MAX_THREADS*drand48())); // on average, have one child per second send data to the parent process
+    if(_child) {
+	signal(SIGALRM, (__sighandler_t) AlarmHandler);
+	alarm(1);  // (int)(2*_MAX_THREADS*drand48())); // on average, have one child per second send data to the parent process
+    }
 }
 
 
@@ -150,18 +161,20 @@ void Predict_Init(GRAPH *G) {
 ** edges that have been observed in the same sampled graphlet, of [1 if ignoring qr, or] whether (x,y) has
 ** appeared at CNP (q,r). (1 if yes, 0 if no).
 */
-#define RAW_COUNTS 0 // this works OK but COUNT_xy_only works better
-#if !RAW_COUNTS
-#define COUNT_xy_only 1 // count unique [xy] edges only; othewise include both q:r and x:y; edges only seems to work best.
+#define COUNT_uv_only 1 // this works OK but COUNT_xy_only works better
+#if COUNT_uv_only
+  #define DEG_WEIGHTED_COUNTS 1
+#else
+  #define COUNT_xy_only 1 // count unique [xy] edges only; othewise include both q:r and x:y; edges only seems to work best.
 #endif
 
 #ifdef COUNT_xy_only
 // This function is only used if we want to see how many times each xy edge has been seen--but it doesn't seem necessary.
 Boolean Traverse_xy(foint key, foint data) {
-    assert(COUNT_xy_only);
+    if(!COUNT_xy_only) Apology("!COUNT_xy_only not yet implemented");
     char *ID = key.v;
-    int *pCount = data.v;
-    printf("(x:y)=%s %d",ID, *pCount);
+    float *pCount = data.v;
+    printf("(x:y)=%s %g",ID, *pCount);
     return true;
 }
 #endif
@@ -172,9 +185,9 @@ Boolean Traverse_xy(foint key, foint data) {
 */
 Boolean TraverseNodePairCounts(foint key, foint data) {
     char *ID = key.v;
-#if RAW_COUNTS
-    int *pCount = data.v;
-    printf("\t%s %d",ID, *pCount);
+#if COUNT_uv_only
+    float *pCount = data.v;
+    printf("\t%s %g",ID, *pCount);
 #else // seems to be the same output whether or not COUNT_xy_only, since it's the ID that distinguishes them.
     BINTREE *op_xy = data.v;
     printf("\t%s %d",ID, op_xy->n);
@@ -188,7 +201,7 @@ Boolean TraverseNodePairCounts(foint key, foint data) {
 ** the pair of nodes, the edge truth, and all the participation counts.
 */
 void PredictFlushAllCounts(GRAPH *G){
-    if(_child) alarm(0); // turn off _flushCounts alarm
+    alarm(0); // turn off _flushCounts alarm
     int i,j;
     for(i=1; i < G->n; i++) for(j=0; j<i; j++) {
 	if(PREDICT_GRAPH_NON_EMPTY(i,j))  // only output node pairs with non-zero counts
@@ -201,7 +214,7 @@ void PredictFlushAllCounts(GRAPH *G){
 }
 
 
-static void UpdateNodePair(int G_u, int G_v, char *ID, int count); // Prototype; code is below
+static void UpdateNodePair(int G_u, int G_v, char *ID, double count); // Prototype; code is below
 
 
 // TraverseCanonicalNodePairs is called via BinaryTreeTraverse to traverse all the known associations between a particular pair
@@ -211,13 +224,14 @@ static void UpdateNodePair(int G_u, int G_v, char *ID, int count); // Prototype;
 // The pair of nodes (G_u,G_v) in G must be global since there's no other mechanism to get that info here.
 static int _TraverseCanonicalPairs_G_u, _TraverseCanonicalPairs_G_v; // indices into _PredictGraph[G_u][G_v]
 static char *_TraverseCanonicalPairs_perm; // canonical permutation array for the current sampled graphlet...
+static double _TraverseCanonicalPairs_deg_weight; // degree-based weigt of interior nodes
 static unsigned *_TraverseCanonicalPairs_Varray; // ...and the associated Varray.
 
 static Boolean TraverseCanonicalPairs(foint key, foint data) {
     char *ID = key.v; // ID is a *string* of the form k:o:p[[q:r]:x:y], where (o,p) is the canonical orbit pair.
-    int *pCanonicalCount = data.v; // the count that this (o,p) pair was seen at (u,v) during motif enumeration.
+    int *pCanonicalCount = data.v; // the count that this (o,p) pair was seen at (u,v) during canonical motif enumeration.
     static char ID2[BUFSIZ], ID3[BUFSIZ];
-#if RAW_COUNTS // the tail end of the ID string contains either x:y (COUNT_xy_only) or q:r:x:y (otherwise)
+#if COUNT_uv_only // the tail end of the ID string contains either x:y (COUNT_xy_only) or q:r:x:y (otherwise)
     strcpy(ID3, ID); // make a copy so we can nuke bits of it.
 #else // the tail end of the ID string contains either x:y (COUNT_xy_only) or q:r:x:y (otherwise)
     strcpy(ID2, ID); // make a copy so we can nuke bits of it.
@@ -238,21 +252,22 @@ static Boolean TraverseCanonicalPairs(foint key, foint data) {
     sprintf(ID3, "%s:%d:%d:%d:%d", ID2, q,r,G_x,G_y); // k:o:p:q:r:x:y
   #endif
 #endif
-    UpdateNodePair(_TraverseCanonicalPairs_G_u, _TraverseCanonicalPairs_G_v, ID3, *pCanonicalCount);
+    UpdateNodePair(_TraverseCanonicalPairs_G_u, _TraverseCanonicalPairs_G_v, ID3,
+	*pCanonicalCount * _TraverseCanonicalPairs_deg_weight);
     return true;
 }
 
 
 // Given a pair of nodes (u,v) in G and an association ID, increment the (u,v) count of that association by the count
-// of the ID. Note that unless RAW_COUNTS is true, this function is *only* used during merge mode (-mq).
-static void UpdateNodePair(int G_u, int G_v, char *ID, int count) {
-    int *pUVassoc; // pointer to either a count, or sub-binary tree.
+// of the ID. Note that unless COUNT_uv_only is true, this function is *only* used during merge mode (-mq).
+static void UpdateNodePair(int G_u, int G_v, char *ID, double count) {
+    float *pUVassoc; // pointer to either a count, or sub-binary tree.
     if(G_u<G_v) { int tmp=G_u; G_u=G_v;G_v=tmp;}
     if(_PredictGraph[G_u][G_v] == NULL)
-	_PredictGraph[G_u][G_v] = HTreeAlloc(1+!RAW_COUNTS); // depth 1 if RAW_COUNTS, or 2 for any COUNT_*xy
+	_PredictGraph[G_u][G_v] = HTreeAlloc(1+!COUNT_uv_only); // depth 1 if COUNT_uv_only, or 2 for any COUNT_*xy
     char buf[BUFSIZ], *IDarray[2];
     IDarray[0] = strcpy(buf,ID);
-#if !RAW_COUNTS
+#if !COUNT_uv_only
     // find the 3rd colon so we can isolate k:o:p from [q:r:]x:y
     int i, G_x,G_y;
     char *s=buf;
@@ -266,15 +281,15 @@ static void UpdateNodePair(int G_u, int G_v, char *ID, int count) {
     if(HTreeLookup(_PredictGraph[G_u][G_v], IDarray, (void*) &pUVassoc))
 	*pUVassoc += count;
     else {
-	pUVassoc = Omalloc(sizeof(int));
+	pUVassoc = Omalloc(sizeof(float));
 	*pUVassoc = count;
 	HTreeInsert(_PredictGraph[G_u][G_v], IDarray, (foint)(void*) pUVassoc);
 #if PARANOID_ASSERTS
 	assert(HTreeLookup(_PredictGraph[G_u][G_v], IDarray, (void*) &pUVassoc)
-	    && *pUVassoc == count);
+	    && fabs(*pUVassoc - count)/count < 1e-6);
 #endif
     }
-    //printf("P %s %s %d (%d)\n", PrintNodePairSorted(G_u,':',G_v), ID, count, *pUVassoc);
+    //printf("P %s %s %g (%g)\n", PrintNodePairSorted(G_u,':',G_v), ID, count, *pUVassoc);
 }
 
 
@@ -391,7 +406,7 @@ void SubmotifIncrementCanonicalPairCounts(int topOrdinal, int Gint, TINY_GRAPH *
 	    int *pcount;
 	    char buf[BUFSIZ], buf_kop_only[BUFSIZ];
 	    sprintf(buf_kop_only,"%d:%d:%d", _k,o,p);
-#if RAW_COUNTS
+#if COUNT_uv_only
 	    sprintf(buf,"%d:%d:%d", _k,o,p);
 #else
 	    int q,r;
@@ -482,6 +497,8 @@ static void AccumulateCanonicalSubmotifs(int topOrdinal, TINY_GRAPH *g)
 */
 void AccumulateGraphletParticipationCounts(GRAPH *G, unsigned Varray[], TINY_GRAPH *g, int Gint, int GintOrdinal)
 {
+    static int ramCheck;
+    if(++ramCheck % 1000 == 0) CheckRAMusage();
     int i,j;
     char perm[MAX_K];
     if(_canonicalParticipationCounts[GintOrdinal][1][0] == NULL) { // [1][0] since [0][0] will always be NULL
@@ -496,6 +513,9 @@ void AccumulateGraphletParticipationCounts(GRAPH *G, unsigned Varray[], TINY_GRA
     memset(perm, 0, _k);
     ExtractPerm(perm, Gint);
 
+    double totalWeight = 0;
+    for(i=0;i<_k;i++) totalWeight += 1.0/G->degree[Varray[i]];
+
     for(i=1;i<_k;i++) for(j=0;j<i;j++) // loop through all pairs of nodes in the *canonical* version of the graphlet
     {
 	int g_u=perm[i], g_v=perm[j]; // u and v in the non-canonical motif g that is induced from G
@@ -509,6 +529,11 @@ void AccumulateGraphletParticipationCounts(GRAPH *G, unsigned Varray[], TINY_GRA
 	if(g_u < g_v) { int tmp = g_u; g_u=g_v; g_v=tmp; } // lower triangle of g
 	_TraverseCanonicalPairs_G_u = G_u; _TraverseCanonicalPairs_G_v = G_v;
 	_TraverseCanonicalPairs_Varray = Varray; _TraverseCanonicalPairs_perm = perm;
+#if COUNT_uv_only && DEG_WEIGHTED_COUNTS
+	_TraverseCanonicalPairs_deg_weight = totalWeight - 1.0/G->degree[G_u] - 1.0/G->degree[G_v];
+#else
+	_TraverseCanonicalPairs_deg_weight = 1;
+#endif
 	BinTreeTraverse(_canonicalParticipationCounts[GintOrdinal][i][j], TraverseCanonicalPairs);
 #if 0
 	int l,m;

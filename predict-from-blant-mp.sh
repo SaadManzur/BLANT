@@ -11,7 +11,7 @@ die(){ (echo "$USAGE"; echo "FATAL ERROR: $@")>&2; exit 1; }
 INCLUDE_KNOWN=0
 PREDICTORS_ONLY=0
 EVALUATE=''
-MINIMUMS="min_samples=10000; min_rho=0.25; min_t=100; min_p=0.9" # very stringent, used for actual prediction
+MINIMUMS="min_samples=10000; min_rho=0.25; min_t=100; min_p=0.8" # very stringent, used for actual prediction
 while [ $# -gt 1 ]; do
     case "$1" in
     -include-known) INCLUDE_KNOWN=1; shift;;

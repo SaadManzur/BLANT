@@ -9,11 +9,55 @@
 #include <signal.h>
 #include <ctype.h>
 #include <unistd.h>
-#include <sys/sysinfo.h>
 
 // Watch memory usage
 #include <sys/time.h>
 #include <sys/resource.h>
+
+// Reasonable Defaults for a Mac with 16GB RAM since it's too much trouble to find the real values.
+static double totalGB = 16, freeGB = 8, MAX_GB;
+
+#define GB (1024*1024*1024L)
+#if __APPLE__
+  typedef sig_t __sighandler_t;
+  #define RUSAGE_MEM_UNIT 1L  // units of bytes
+#else
+  #include <sys/sysinfo.h>
+  #define RUSAGE_MEM_UNIT (1024L) // units of kB
+#endif
+
+void CheckRAMusage(void)
+{
+    static struct rusage usage;
+    static int status;
+#if !__APPLE__
+    static struct sysinfo info;
+    status = sysinfo(&info);
+    assert(status == 0);
+    totalGB = info.totalram*1.0/GB; 
+    freeGB = info.freeram*1.0/GB;
+#endif
+    MAX_GB=MIN(totalGB/2, freeGB-4); // at most half the machine's RAM, and leaving at least 4GB free
+    if(!usage.ru_maxrss) Note("System claims to have totalram %f GB, freeram %f GB; aiming to use MAX %g GB \n",
+	totalGB, freeGB, MAX_GB);
+    status = getrusage(RUSAGE_SELF, &usage);
+    assert(status == 0);
+    //Note("res %f drss %f srss %f", 1.0*usage.ru_maxrss*RUSAGE_MEM_UNIT/GB, 1.0*usage.ru_idrss*RUSAGE_MEM_UNIT/GB, 1.0*usage.ru_isrss*RUSAGE_MEM_UNIT/GB);
+    if(usage.ru_maxrss*RUSAGE_MEM_UNIT/GB > MAX_GB || (usage.ru_idrss+usage.ru_isrss)*RUSAGE_MEM_UNIT/GB > MAX_GB)
+    {
+	double new=usage.ru_maxrss*(double)RUSAGE_MEM_UNIT/GB;
+	static double previous;
+	if(new > 1.1*previous) {
+#if !__APPLE__
+	    status = sysinfo(&info);
+	    freeGB = info.freeram*1.0/GB;
+#endif
+	    Warning("WARNING: Resident memory usage has reached %g GB with %g GB remaining free", new, freeGB);
+	    previous = new;
+	}
+	_memUsageAlarm=true;
+    }
+}
 
 /* General note: when associating any pair of nodes (u,v) in the large graph G, with "canonical orbit pairs" in
 ** canonical graphlets, the number of possible combination is so incredibly enormous and sparse, that even hashing
@@ -44,45 +88,6 @@ static BINTREE *_predictiveOrbits; // if non-NULL, any orbit not in this diction
 // best), we spit out our accumulation so far so the parent can parse them online. This Boolean is set to true each
 // 0.1s, and below we check it to see if it's time to flush our counts.
 static Boolean _flushCounts = true;
-
-#define GB (1024*1024*1024L)
-#if __APPLE__
-  typedef sig_t __sighandler_t;
-  #define RUSAGE_MEM_UNIT 1L  // units of bytes
-#else
-  #define RUSAGE_MEM_UNIT (1024L) // units of kB
-#endif
-
-void CheckRAMusage(void)
-{
-    static struct rusage usage;
-    static struct sysinfo info;
-    static double totalGB, freeGB, MAX_GB;
-    static int status;
-
-    status = sysinfo(&info);
-    assert(status == 0);
-    totalGB = info.totalram*1.0/GB; 
-    freeGB = info.freeram*1.0/GB;
-    MAX_GB=MIN(totalGB/2, freeGB-4); // at most half the machine's RAM, and leaving at least 4GB free
-    if(!usage.ru_maxrss) Note("System claims to have totalram %f GB, freeram %f GB; aiming to use MAX %g GB \n",
-	totalGB, freeGB, MAX_GB);
-    status = getrusage(RUSAGE_SELF, &usage);
-    assert(status == 0);
-    //Note("res %f drss %f srss %f", 1.0*usage.ru_maxrss*RUSAGE_MEM_UNIT/GB, 1.0*usage.ru_idrss*RUSAGE_MEM_UNIT/GB, 1.0*usage.ru_isrss*RUSAGE_MEM_UNIT/GB);
-    if(usage.ru_maxrss*RUSAGE_MEM_UNIT/GB > MAX_GB || (usage.ru_idrss+usage.ru_isrss)*RUSAGE_MEM_UNIT/GB > MAX_GB)
-    {
-	double new=usage.ru_maxrss*(double)RUSAGE_MEM_UNIT/GB;
-	static double previous;
-	if(new > 1.1*previous) {
-	    status = sysinfo(&info);
-	    freeGB = info.freeram*1.0/GB;
-	    Warning("WARNING: Resident memory usage has reached %g GB with %g GB remaining free", new, freeGB);
-	    previous = new;
-	}
-	_memUsageAlarm=true;
-    }
-}
 
 // Signal handler for the SIGALRM that occurs periodically forcing us to flush our counts to a parent (if we're _child).
 int AlarmHandler(int sig)

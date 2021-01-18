@@ -9,6 +9,7 @@
 #include <signal.h>
 #include <ctype.h>
 #include <unistd.h>
+#include <sys/sysinfo.h>
 
 // Watch memory usage
 #include <sys/time.h>
@@ -48,24 +49,35 @@ static Boolean _flushCounts = true;
 #if __APPLE__
   typedef sig_t __sighandler_t;
   #define RUSAGE_MEM_UNIT 1L  // units of bytes
-  #define MAX_GB 4
 #else
   #define RUSAGE_MEM_UNIT (1024L) // units of kB
-  #define MAX_GB 24
 #endif
 
 void CheckRAMusage(void)
 {
     static struct rusage usage;
-    int status = getrusage(RUSAGE_SELF, &usage);
+    static struct sysinfo info;
+    static double totalGB, freeGB, MAX_GB;
+    static int status;
+
+    status = sysinfo(&info);
     assert(status == 0);
-    //Warning("res %d drss %g srss %g", usage.ru_maxrss, usage.ru_idrss/1.0, usage.ru_isrss/1.0);
-    if(usage.ru_maxrss*RUSAGE_MEM_UNIT > (GB*MAX_GB) || (usage.ru_idrss+usage.ru_isrss)>(long)(1024*1024*(MAX_GB+5)))
+    totalGB = info.totalram*1.0/GB; 
+    freeGB = info.freeram*1.0/GB;
+    MAX_GB=MIN(totalGB/2, freeGB-4); // at most half the machine's RAM, and leaving at least 4GB free
+    if(!usage.ru_maxrss) Note("System claims to have totalram %f GB, freeram %f GB; aiming to use MAX %g GB \n",
+	totalGB, freeGB, MAX_GB);
+    status = getrusage(RUSAGE_SELF, &usage);
+    assert(status == 0);
+    //Note("res %f drss %f srss %f", 1.0*usage.ru_maxrss*RUSAGE_MEM_UNIT/GB, 1.0*usage.ru_idrss*RUSAGE_MEM_UNIT/GB, 1.0*usage.ru_isrss*RUSAGE_MEM_UNIT/GB);
+    if(usage.ru_maxrss*RUSAGE_MEM_UNIT/GB > MAX_GB || (usage.ru_idrss+usage.ru_isrss)*RUSAGE_MEM_UNIT/GB > MAX_GB)
     {
 	double new=usage.ru_maxrss*(double)RUSAGE_MEM_UNIT/GB;
 	static double previous;
 	if(new > 1.1*previous) {
-	    Warning("WARNING: Resident memory usage has reached %g GB", new);
+	    status = sysinfo(&info);
+	    freeGB = info.freeram*1.0/GB;
+	    Warning("WARNING: Resident memory usage has reached %g GB with %g GB remaining free", new, freeGB);
 	    previous = new;
 	}
 	_memUsageAlarm=true;
@@ -503,7 +515,7 @@ static void AccumulateCanonicalSubmotifs(int topOrdinal, TINY_GRAPH *g)
 void AccumulateGraphletParticipationCounts(GRAPH *G, unsigned Varray[], TINY_GRAPH *g, int Gint, int GintOrdinal)
 {
     static int ramCheck;
-    if(++ramCheck % 1000 == 0) CheckRAMusage();
+    if(++ramCheck % 100000 == 0) CheckRAMusage();
     int i,j;
     char perm[MAX_K];
     if(_canonicalParticipationCounts[GintOrdinal][1][0] == NULL) { // [1][0] since [0][0] will always be NULL

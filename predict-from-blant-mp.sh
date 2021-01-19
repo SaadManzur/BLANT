@@ -43,7 +43,8 @@ hawk 'function WeightToBin(w){return int(100*w);} # because weights are floats b
     ARGIND==1{
 	uv=$1 # node pair
 	ASSERT(2==split(uv,a,":"),"first column not colon-separated");
-	u=a[1]; v=a[2]; ASSERT(u>v,"u and v in wrong order");
+	u=a[1]; v=a[2]; #ASSERT(u>v,"u and v in wrong order");
+	if(u<v) {tmp=u; u=v; v=tmp}
 	ASSERT($2==0 || $2==1, "expecting second column to be Boolean");
 	E[uv]=e[u][v]=$2 # edge Boolean
 	for(i=3;i<NF;i+=2){ #col 3 onwards are (cnp,count) pairs
@@ -85,7 +86,8 @@ hawk 'function WeightToBin(w){return int(100*w);} # because weights are floats b
     ARGIND==2{ # actually the same file, just that we go through it now creating predictions
 	uv=$1 # node pair
 	ASSERT(2==split(uv,a,":"),"first column not colon-separated");
-	u=a[1]; v=a[2]; ASSERT(u>v,"u and v in wrong order");
+	u=a[1]; v=a[2]; #ASSERT(u>v,"u and v in wrong order");
+	if(u<v) {tmp=u; u=v; v=tmp}
 	p1=0;
 	c=0; bestCol="none";
 	for(i=3;i<NF;i+=2)if($i in hist) {

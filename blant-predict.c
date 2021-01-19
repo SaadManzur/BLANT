@@ -15,7 +15,7 @@
 #include <sys/resource.h>
 
 // Reasonable Defaults for a Mac with 16GB RAM since it's too much trouble to find the real values.
-static double totalGB = 16, freeGB = 8, MAX_GB;
+static double MAX_GB, totalGB = 16; //, freeGB = 8, MAX_GB;
 
 #define GB (1024.0*1024.0*1024.0)
 typedef sig_t sighandler_t;
@@ -28,8 +28,8 @@ typedef sig_t sighandler_t;
     #define SYSINFO_MEM_UNIT 4096L  // 4k unit???
     #define RUSAGE_MEM_UNIT 4096L  // 4k page
   #else
-    #define SYSINFO_MEM_UNIT 1L
-    #define RUSAGE_MEM_UNIT (1024L) // units of kB
+    #define SYSINFO_MEM_UNIT info.mem_unit
+    #define RUSAGE_MEM_UNIT info.mem_unit
   #endif
 #endif
 
@@ -43,11 +43,11 @@ void CheckRAMusage(void)
     assert(status == 0);
     //Note("RAW sysinfo data: totalram %ld freeram %ld\n", info.totalram, info.freeram);
     totalGB = info.totalram*1.0*SYSINFO_MEM_UNIT/GB; 
-    freeGB = info.freeram*1.0*SYSINFO_MEM_UNIT/GB;
+    //freeGB = info.freeram*1.0*SYSINFO_MEM_UNIT/GB;
 #endif
-    MAX_GB=MIN(totalGB/2, freeGB-4); // at most half the machine's RAM, and leaving at least 4GB free
-    if(!usage.ru_maxrss) Note("System claims to have totalram %g GB, freeram %g GB; aiming to use MAX %g GB",
-	totalGB, freeGB, MAX_GB);
+    MAX_GB=totalGB-4; //MIN(totalGB/2, freeGB-4); // at most half the machine's RAM, and leaving at least 4GB free
+    if(!usage.ru_maxrss) Note("System claims to have totalram %g GB;  aiming to use MAX %g GB",
+	totalGB, MAX_GB);
     status = getrusage(RUSAGE_SELF, &usage);
     assert(status == 0);
     //Note("RAW rusage data: res %ld drss %ld srss %ld", usage.ru_maxrss, usage.ru_idrss, usage.ru_isrss);
@@ -58,9 +58,9 @@ void CheckRAMusage(void)
 	if(new > 1.1*previous) {
 #if !__APPLE__
 	    status = sysinfo(&info);
-	    freeGB = info.freeram*SYSINFO_MEM_UNIT/GB;
+	    //freeGB = info.freeram*SYSINFO_MEM_UNIT/GB;
 #endif
-	    Warning("WARNING: Resident memory usage has reached %g GB with %g GB remaining free", new, freeGB);
+	    Warning("WARNING: Resident memory usage has reached %g GB", new);
 	    previous = new;
 	}
 	_memUsageAlarm=true;
@@ -203,8 +203,7 @@ void Predict_Init(GRAPH *G) {
 Boolean Traverse_xy(foint key, foint data) {
     if(!COUNT_xy_only) Apology("!COUNT_xy_only not yet implemented");
     char *ID = key.v;
-    float *pCount = data.v;
-    printf("(x:y)=%s %g",ID, *pCount);
+    printf("(x:y)=%s %g",ID, data.f);
     return true;
 }
 #endif
@@ -216,8 +215,7 @@ Boolean Traverse_xy(foint key, foint data) {
 Boolean TraverseNodePairCounts(foint key, foint data) {
     char *ID = key.v;
 #if COUNT_uv_only
-    float *pCount = data.v;
-    printf("\t%s %g",ID, *pCount);
+    printf("\t%s %g",ID, data.f);
 #else // seems to be the same output whether or not COUNT_xy_only, since it's the ID that distinguishes them.
     BINTREE *op_xy = data.v;
     printf("\t%s %d",ID, op_xy->n);
@@ -291,7 +289,7 @@ static Boolean TraverseCanonicalPairs(foint key, foint data) {
 // Given a pair of nodes (u,v) in G and an association ID, increment the (u,v) count of that association by the count
 // of the ID. Note that unless COUNT_uv_only is true, this function is *only* used during merge mode (-mq).
 static void UpdateNodePair(int G_u, int G_v, char *ID, double count) {
-    float *pUVassoc; // pointer to either a count, or sub-binary tree.
+    foint fUVassoc; // either a count, or a pointer to either a count or sub-binary tree.
     if(G_u<G_v) { int tmp=G_u; G_u=G_v;G_v=tmp;}
     if(_PredictGraph[G_u][G_v] == NULL)
 	_PredictGraph[G_u][G_v] = HTreeAlloc(1+!COUNT_uv_only); // depth 1 if COUNT_uv_only, or 2 for any COUNT_*xy
@@ -308,18 +306,17 @@ static void UpdateNodePair(int G_u, int G_v, char *ID, double count) {
 #endif
     IDarray[1] = s; // the string [q:r:]x:y
 #endif
-    if(HTreeLookup(_PredictGraph[G_u][G_v], IDarray, (void*) &pUVassoc))
-	*pUVassoc += count;
-    else {
-	pUVassoc = Omalloc(sizeof(float));
-	*pUVassoc = count;
-	HTreeInsert(_PredictGraph[G_u][G_v], IDarray, (foint)(void*) pUVassoc);
+    if(HTreeLookup(_PredictGraph[G_u][G_v], IDarray, &fUVassoc))
+	fUVassoc.f += count;
+    else 
+	fUVassoc.f = count;
+    HTreeInsert(_PredictGraph[G_u][G_v], IDarray, fUVassoc);
 #if PARANOID_ASSERTS
-	assert(HTreeLookup(_PredictGraph[G_u][G_v], IDarray, (void*) &pUVassoc)
-	    && fabs(*pUVassoc - count)/count < 1e-6);
+    float newValue = fUVassoc.f;
+    assert(HTreeLookup(_PredictGraph[G_u][G_v], IDarray, &fUVassoc)
+	&& fabs(fUVassoc.f - newValue)/newValue < 1e-6);
 #endif
-    }
-    //printf("P %s %s %g (%g)\n", PrintNodePairSorted(G_u,':',G_v), ID, count, *pUVassoc);
+    //printf("P %s %s %g (%g)\n", PrintNodePairSorted(G_u,':',G_v), ID, count, fUVassoc.f);
 }
 
 

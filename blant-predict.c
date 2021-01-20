@@ -63,7 +63,7 @@ void CheckRAMusage(void)
 	    Warning("WARNING: Resident memory usage has reached %g GB", new);
 	    previous = new;
 	}
-	_memUsageAlarm=true;
+	_earlyAbort=true;
     }
 }
 
@@ -615,7 +615,7 @@ int PredictMerge(GRAPH *G)
     assert(_JOBS==1); // we only read from standard input, so threads make no sense.
     char line[MAX_ORBITS * BUFSIZ];
     int lineNum = 0;
-    while(fgets(line, sizeof(line), stdin) && !_memUsageAlarm) {
+    while(fgets(line, sizeof(line), stdin) && !_earlyAbort) {
 	Predict_ProcessLine(G, line);
 	++lineNum;
     }

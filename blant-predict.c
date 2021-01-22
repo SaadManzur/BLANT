@@ -193,7 +193,8 @@ void Predict_Init(GRAPH *G) {
 */
 #define COUNT_uv_only 1 // this works OK but COUNT_xy_only works better
 #if COUNT_uv_only
-  #define DEG_WEIGHTED_COUNTS 1
+  #define DEG_WEIGHTED_COUNTS 0
+  #define COMMON_NEIGHBORS 1
 #else
   #define COUNT_xy_only 1 // count unique [xy] edges only; othewise include both q:r and x:y; edges only seems to work best.
 #endif
@@ -252,7 +253,7 @@ static void UpdateNodePair(int G_u, int G_v, char *ID, double count); // Prototy
 // The pair of nodes (G_u,G_v) in G must be global since there's no other mechanism to get that info here.
 static int _TraverseCanonicalPairs_G_u, _TraverseCanonicalPairs_G_v; // indices into _PredictGraph[G_u][G_v]
 static char *_TraverseCanonicalPairs_perm; // canonical permutation array for the current sampled graphlet...
-static double _TraverseCanonicalPairs_deg_weight; // degree-based weigt of interior nodes
+static double _TraverseCanonicalPairs_weight; // degree-based weigt of interior nodes
 static unsigned *_TraverseCanonicalPairs_Varray; // ...and the associated Varray.
 
 static Boolean TraverseCanonicalPairs(foint key, foint data) {
@@ -281,7 +282,7 @@ static Boolean TraverseCanonicalPairs(foint key, foint data) {
   #endif
 #endif
     UpdateNodePair(_TraverseCanonicalPairs_G_u, _TraverseCanonicalPairs_G_v, ID3,
-	*pCanonicalCount * _TraverseCanonicalPairs_deg_weight);
+	*pCanonicalCount * _TraverseCanonicalPairs_weight);
     return true;
 }
 
@@ -313,8 +314,8 @@ static void UpdateNodePair(int G_u, int G_v, char *ID, double count) {
     HTreeInsert(_PredictGraph[G_u][G_v], IDarray, fUVassoc);
 #if PARANOID_ASSERTS
     float newValue = fUVassoc.f;
-    assert(HTreeLookup(_PredictGraph[G_u][G_v], IDarray, &fUVassoc)
-	&& fabs(fUVassoc.f - newValue)/newValue < 1e-6);
+    assert(HTreeLookup(_PredictGraph[G_u][G_v], IDarray, &fUVassoc) &&
+	(/*(fUVassoc.f==0 && newValue==0) ||*/ fabs(fUVassoc.f - newValue)/newValue < 1e-6));
 #endif
     //printf("P %s %s %g (%g)\n", PrintNodePairSorted(G_u,':',G_v), ID, count, fUVassoc.f);
 }
@@ -543,25 +544,57 @@ void AccumulateGraphletParticipationCounts(GRAPH *G, unsigned Varray[], TINY_GRA
     double totalWeight = 0;
     for(i=0;i<_k;i++) totalWeight += 1.0/G->degree[Varray[i]];
 
+    // Unlike the comment (+++) above, here we need info an *all* pairs of nodes in G that belong to this graphlet,
+    // so we do not filter on the node pair being unconnected.
     for(i=1;i<_k;i++) for(j=0;j<i;j++) // loop through all pairs of nodes in the *canonical* version of the graphlet
     {
 	int g_u=perm[i], g_v=perm[j]; // u and v in the non-canonical motif g that is induced from G
 	int G_u=Varray[g_u], G_v=Varray[g_v]; // u and v in the BIG input graph G.
+	_TraverseCanonicalPairs_weight = 1; // default
 #if PARANOID_ASSERTS
         assert(!TinyGraphAreConnected(g,g_u,g_v) == !GraphAreConnected(G,G_u,G_v));
 #endif
-	// Unlike the comment (+++) above, here we need info an *all* pairs of nodes in G that belong to this graphlet,
-	// so we do not filter on the node pair being unconnected.
+#if COUNT_uv_only
+    #if DEG_WEIGHTED_COUNTS
+	// We have found experimentally that if the sorted order of the degree of the motif agrees with that of the ful
+	// nodes it G, we get a better prediction. We will interpret this as using a greater weight if these agree.
+	// This check needs to be done BEFORE we re-order G_u,G_v to make G_u>G_v.
+	double subtract_uv = 0.0;
+	int motifDegOrder = TinyGraphDegree(g,g_u) - TinyGraphDegree(g,g_v);
+	int graphDegOrder =     GraphDegree(G,G_u) -     GraphDegree(G,G_v);
+	int degOrderAgree = motifDegOrder * graphDegOrder;
+	// If the orders agree, make the weight normal (subtract the values of u and v); otherwise don't count this one at all.
+	if(degOrderAgree > 0) {
+	    // Previously computed the min and max to use as weights based on degOrderAgree, but now it's all or nothing...
+	    int maxDeg = MAX(GraphDegree(G,G_u), GraphDegree(G,G_v));
+	    int minDeg = MIN(GraphDegree(G,G_u), GraphDegree(G,G_v));
+	    subtract_uv = 1.0/minDeg + 1.0/maxDeg;
+	    _TraverseCanonicalPairs_weight = totalWeight - subtract_uv;
+	}
+	else
+	    _TraverseCanonicalPairs_weight = 0.0; 
+    #endif
+    #if COMMON_NEIGHBORS
+	#define MAX_N 9000 // ugly for now--max 32767 since signed short
+	typedef short CNcount;
+	assert(G->n < MAX_N);
+	static CNcount CN[MAX_N][MAX_N];
+	static Boolean CNinit;
+	if(!CNinit) {
+	    int i,j; for(i=0;i<G->n;i++)for(j=0;j<G->n;j++) CN[i][j]=-1;
+	    CNinit=true;
+	}
+	if(CN[G_u][G_v] == -1) CN[G_u][G_v] = CN[G_v][G_u] = GraphNumCommonNeighbors(G, G_u, G_v); // inspired by RAT theory
+	if(CN[G_u][G_v]) _TraverseCanonicalPairs_weight /= sqrt((double)CN[G_u][G_v]);
+    #endif
+#endif
+	// Now re-order for accessing matrices and output.
 	if(G_u < G_v) { int tmp = G_u; G_u=G_v; G_v=tmp; } // for consistency in accessing _PredictGraph
 	if(g_u < g_v) { int tmp = g_u; g_u=g_v; g_v=tmp; } // lower triangle of g
 	_TraverseCanonicalPairs_G_u = G_u; _TraverseCanonicalPairs_G_v = G_v;
 	_TraverseCanonicalPairs_Varray = Varray; _TraverseCanonicalPairs_perm = perm;
-#if COUNT_uv_only && DEG_WEIGHTED_COUNTS
-	_TraverseCanonicalPairs_deg_weight = totalWeight - 1.0/G->degree[G_u] - 1.0/G->degree[G_v];
-#else
-	_TraverseCanonicalPairs_deg_weight = 1;
-#endif
-	BinTreeTraverse(_canonicalParticipationCounts[GintOrdinal][i][j], TraverseCanonicalPairs);
+	if(_TraverseCanonicalPairs_weight)
+	    BinTreeTraverse(_canonicalParticipationCounts[GintOrdinal][i][j], TraverseCanonicalPairs);
 #if 0
 	int l,m;
 	for(l=1;l<_k;l++) for(m=0;m<l;m++) if(l!=i && m!=j && TinyGraphAreConnected(g,perm[l],perm[m])) {

@@ -38,7 +38,7 @@ wzcat "$@" > $TMPDIR/input
 # where the colon word is k:g:i:j (g=graphlet Ordinal, i,j is a node (NOT ORBIT) pair in g.), followed by a count.
 # We call (i,j) a "canonical node pair", or cnp for short.
 
-hawk 'function WeightToBin(w){return int(100*w);} # because weights are floats but we need to bin them
+hawk 'function WeightToBin(w){return int(w);} # because weights are floats but we need to bin them
     BEGIN{'"$MINIMUMS"'}
     ARGIND==1{
 	uv=$1 # node pair
@@ -48,8 +48,9 @@ hawk 'function WeightToBin(w){return int(100*w);} # because weights are floats b
 	ASSERT($2==0 || $2==1, "expecting second column to be Boolean");
 	E[uv]=e[u][v]=$2 # edge Boolean
 	for(i=3;i<NF;i+=2){ #col 3 onwards are (cnp,count) pairs
-	    cnp=$i; c=WeightToBin($(i+1)) # take the integer part since we use floating point weights
+	    cnp=$i; c=$(i+1);
 	    PearsonAddSample(cnp,c,E[uv]);
+	    c=WeightToBin(c); # integer because of histogram
 	    ++hist[cnp][c][E[uv]]; # histogram: number of times orbit-pair $i had exactly count c for edge truth "e"
 	    if(c>max[cnp])max[cnp]=c
 	}

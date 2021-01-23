@@ -191,10 +191,11 @@ void Predict_Init(GRAPH *G) {
 ** edges that have been observed in the same sampled graphlet, of [1 if ignoring qr, or] whether (x,y) has
 ** appeared at CNP (q,r). (1 if yes, 0 if no).
 */
-#define COUNT_uv_only 1 // this works OK but COUNT_xy_only works better
+#define COUNT_uv_only 1 // this works OK but COUNT_xy_only may work better
 #if COUNT_uv_only
-  #define DEG_WEIGHTED_COUNTS 0
-  #define COMMON_NEIGHBORS 1
+  #define DEG_WEIGHTED_COUNTS 1
+  #define DEG_ORDER_MUST_AGREE 0
+  #define COMMON_NEIGHBORS 0
 #else
   #define COUNT_xy_only 1 // count unique [xy] edges only; othewise include both q:r and x:y; edges only seems to work best.
 #endif
@@ -555,11 +556,12 @@ void AccumulateGraphletParticipationCounts(GRAPH *G, unsigned Varray[], TINY_GRA
         assert(!TinyGraphAreConnected(g,g_u,g_v) == !GraphAreConnected(G,G_u,G_v));
 #endif
 #if COUNT_uv_only
-    #if DEG_WEIGHTED_COUNTS
+ #if DEG_WEIGHTED_COUNTS
 	// We have found experimentally that if the sorted order of the degree of the motif agrees with that of the ful
 	// nodes it G, we get a better prediction. We will interpret this as using a greater weight if these agree.
 	// This check needs to be done BEFORE we re-order G_u,G_v to make G_u>G_v.
 	double subtract_uv = 0.0;
+  #if DEG_ORDER_MUST_AGREE
 	int motifDegOrder = TinyGraphDegree(g,g_u) - TinyGraphDegree(g,g_v);
 	int graphDegOrder =     GraphDegree(G,G_u) -     GraphDegree(G,G_v);
 	int degOrderAgree = motifDegOrder * graphDegOrder;
@@ -569,13 +571,17 @@ void AccumulateGraphletParticipationCounts(GRAPH *G, unsigned Varray[], TINY_GRA
 	    int maxDeg = MAX(GraphDegree(G,G_u), GraphDegree(G,G_v));
 	    int minDeg = MIN(GraphDegree(G,G_u), GraphDegree(G,G_v));
 	    subtract_uv = 1.0/minDeg + 1.0/maxDeg;
-	    _TraverseCanonicalPairs_weight = totalWeight - subtract_uv;
 	}
 	else
-	    _TraverseCanonicalPairs_weight = 0.0; 
-    #endif
-    #if COMMON_NEIGHBORS
-	#define MAX_N 9000 // ugly for now--max 32767 since signed short
+	    subtract_uv = totalWeight; // this will result in weight being zero
+  #else
+	    subtract_uv = 1.0/GraphDegree(G,G_u) + 1.0/GraphDegree(G,G_v);
+  #endif
+	_TraverseCanonicalPairs_weight = totalWeight - subtract_uv;
+ #endif
+
+ #if COMMON_NEIGHBORS
+    #define MAX_N 9000 // ugly for now--max 32767 since signed short
 	typedef short CNcount;
 	assert(G->n < MAX_N);
 	static CNcount CN[MAX_N][MAX_N];
@@ -586,7 +592,7 @@ void AccumulateGraphletParticipationCounts(GRAPH *G, unsigned Varray[], TINY_GRA
 	}
 	if(CN[G_u][G_v] == -1) CN[G_u][G_v] = CN[G_v][G_u] = GraphNumCommonNeighbors(G, G_u, G_v); // inspired by RAT theory
 	if(CN[G_u][G_v]) _TraverseCanonicalPairs_weight /= sqrt((double)CN[G_u][G_v]);
-    #endif
+ #endif
 #endif
 	// Now re-order for accessing matrices and output.
 	if(G_u < G_v) { int tmp = G_u; G_u=G_v; G_v=tmp; } // for consistency in accessing _PredictGraph

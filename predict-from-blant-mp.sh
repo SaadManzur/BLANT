@@ -11,12 +11,15 @@ die(){ (echo "$USAGE"; echo "FATAL ERROR: $@")>&2; exit 1; }
 INCLUDE_KNOWN=0
 PREDICTORS_ONLY=0
 EVALUATE=''
-MINIMUMS="min_samples=10000; min_rho=0.25; min_t=100; min_p=0.8" # very stringent, used for actual prediction
+TIGHT_MINIMUMS="min_samples=10000; min_rho=0.25; min_t=100; min_p=0.8" # very stringent, used for actual prediction
+LOOSE_MINIMUMS="min_samples=100  ; min_rho=0.01; min_t=  5; min_p=0.1" # less stringent, just for detection
+MINIMUMS=$TIGHT_MINIMUMS # default is tight
+
 while [ $# -gt 1 ]; do
     case "$1" in
     -include-known) INCLUDE_KNOWN=1; shift;;
     -predictors-only) PREDICTORS_ONLY=1; shift
-	MINIMUMS="min_samples=100; min_rho=0.01; min_t=5; min_p=0.1" # less stringent, just for detection
+	MINIMUMS="$LOOSE_MINIMUMS"
 	;;
     -eval*) EVALUATE="$2"; shift 2;;
     -*) die "unknown option '$1'";;
@@ -38,29 +41,35 @@ wzcat "$@" > $TMPDIR/input
 # where the colon word is k:g:i:j (g=graphlet Ordinal, i,j is a node (NOT ORBIT) pair in g.), followed by a count.
 # We call (i,j) a "canonical node pair", or cnp for short.
 
-hawk 'function WeightToBin(w){return int(w);} # because weights are floats but we need to bin them
-    BEGIN{'"$MINIMUMS"'}
-    ARGIND==1{
+hawk 'BEGIN{'"$MINIMUMS"'}
+    ARGIND<=2{
 	uv=$1 # node pair
 	ASSERT(2==split(uv,a,":"),"first column not colon-separated");
-	u=a[1]; v=a[2]; #ASSERT(u>v,"u and v in wrong order");
+	u=a[1]; v=a[2];
+	if(ARGIND==1) { # only need these assertions on first pass
+	    ASSERT($2==0 || $2==1, "expecting second column to be Boolean");
+	    #ASSERT(u>v,"u and v in wrong order");
+	}
 	if(u<v) {tmp=u; u=v; v=tmp}
-	ASSERT($2==0 || $2==1, "expecting second column to be Boolean");
 	E[uv]=e[u][v]=$2 # edge Boolean
 	for(i=3;i<NF;i+=2){ #col 3 onwards are (cnp,count) pairs
 	    cnp=$i; c=$(i+1);
-	    PearsonAddSample(cnp,c,E[uv]);
-	    c=WeightToBin(c); # integer because of histogram
+	    if(ARGIND==1) StatAddSample(cnp,c);
+	    else {
+		c /= StatMean(cnp); # normalize the counts to mean 1, and later lop off everything below 1
+		PearsonAddSample(cnp,c,E[uv]);
+	    }
+	    c=int(c); # integer because of histogram
 	    ++hist[cnp][c][E[uv]]; # histogram: number of times orbit-pair $i had exactly count c for edge truth "e"
 	    if(c>max[cnp])max[cnp]=c
 	}
     }
-    ENDFILE{if(ARGIND==1){
+    ENDFILE{if(ARGIND==2){
 	# Now produce empirical precision curve as a function of orbit-pair count (c), for each orbit-pair
 	printf("Predictive stats for '"$*"'\n") > "/dev/stderr"
 	for(cnp in hist) {
 	    for(c=max[cnp];c>=0; --c) { # starting at the highest orbit-pair counts
-		numer[cnp][c]+=hist[cnp][c][1]; # those that actually had edge
+		numer[cnp][c]+=hist[cnp][c][1]; # those that actually had an edge
 		denom[cnp][c]+=hist[cnp][c][1]+hist[cnp][c][0]; # both edge and non-edge
 		# precision of this orbit-pair as func of c (add 1 to denom simply to avoid div by zero)
 		prec[cnp][c] = numer[cnp][c]/(denom[cnp][c]+1);
@@ -84,7 +93,7 @@ hawk 'function WeightToBin(w){return int(w);} # because weights are floats but w
 	}
 	if('$PREDICTORS_ONLY')exit(0);
     }}
-    ARGIND==2{ # actually the same file, just that we go through it now creating predictions
+    ARGIND==3{ # actually the same file, just that we go through it now creating predictions
 	uv=$1 # node pair
 	ASSERT(2==split(uv,a,":"),"first column not colon-separated");
 	u=a[1]; v=a[2]; #ASSERT(u>v,"u and v in wrong order");
@@ -92,13 +101,13 @@ hawk 'function WeightToBin(w){return int(w);} # because weights are floats but w
 	p1=0;
 	c=0; bestCol="none";
 	for(i=3;i<NF;i+=2)if($i in hist) {
-	    cnp=$i; c=WeightToBin($(i+1));
+	    cnp=$i; c=int($(i+1)/StatMean(cnp));
 	    if(c>max[cnp])c=max[cnp]; # clip the orbit count to the highest seen during training
 	    # filter on "reasonable" orbit pairs
 	    if(p1<prec[cnp][c]){p1=prec[cnp][c];bestCol=c"="cnp} #... and take the best resulting prediction
 	}
 	if(p1>min_p && E[uv]<='$INCLUDE_KNOWN') printf "%s\t%g\tbestCol %s\t[%s]\n",uv,p1,bestCol,$0
-    }' "$TMPDIR/input" "$TMPDIR/input" | # yes, twice
+    }' "$TMPDIR/input" "$TMPDIR/input" "$TMPDIR/input" | # yes, three times
     sort -k 2gr -k 4nr |
     if [ "$EVALUATE" = "" ]; then
 	cat

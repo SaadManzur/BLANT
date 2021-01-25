@@ -13,7 +13,7 @@ PREDICTORS_ONLY=0
 EVALUATE=''
 TIGHT_MINIMUMS="min_samples=10000; min_rho=0.25; min_t=100; min_p=0.8" # very stringent, used for actual prediction
 LOOSE_MINIMUMS="min_samples=100  ; min_rho=0.01; min_t=  5; min_p=0.1" # less stringent, just for detection
-MINIMUMS=$TIGHT_MINIMUMS # default is tight
+MINIMUMS="$TIGHT_MINIMUMS" # default is tight
 
 while [ $# -gt 1 ]; do
     case "$1" in
@@ -41,8 +41,13 @@ wzcat "$@" > $TMPDIR/input
 # where the colon word is k:g:i:j (g=graphlet Ordinal, i,j is a node (NOT ORBIT) pair in g.), followed by a count.
 # We call (i,j) a "canonical node pair", or cnp for short.
 
-hawk 'BEGIN{'"$MINIMUMS"'}
-    ARGIND<=2{
+# Bins need to be integers but we want reasonably high resolution, even when the sample sizes are small leading to
+# low scores. The disadvantage of so many bins is that gawk takes up lots of RAM... oh well...
+BINS_PER_WEIGHT_UNIT=100
+
+hawk 'function WeightToBin(w){return int('$BINS_PER_WEIGHT_UNIT'*w);} # because weights are floats but we need to bin them
+    BEGIN{'"$MINIMUMS"'; cNorm=1} # cNorm = Boolean: normalize by StatMean(cnp)?
+    ARGIND<=1+cNorm{
 	uv=$1 # node pair
 	ASSERT(2==split(uv,a,":"),"first column not colon-separated");
 	u=a[1]; v=a[2];
@@ -54,17 +59,17 @@ hawk 'BEGIN{'"$MINIMUMS"'}
 	E[uv]=e[u][v]=$2 # edge Boolean
 	for(i=3;i<NF;i+=2){ #col 3 onwards are (cnp,count) pairs
 	    cnp=$i; c=$(i+1);
-	    if(ARGIND==1) StatAddSample(cnp,c);
+	    if(ARGIND==cNorm) StatAddSample(cnp,c); # if cNorm==0 this never gets executed
 	    else {
-		c /= StatMean(cnp); # normalize the counts to mean 1, and later lop off everything below 1
+		if(cNorm) c /= StatMean(cnp);
 		PearsonAddSample(cnp,c,E[uv]);
 	    }
-	    c=int(c); # integer because of histogram
+	    c=WeightToBin(c); # integer because of histogram
 	    ++hist[cnp][c][E[uv]]; # histogram: number of times orbit-pair $i had exactly count c for edge truth "e"
 	    if(c>max[cnp])max[cnp]=c
 	}
     }
-    ENDFILE{if(ARGIND==2){
+    ENDFILE{if(ARGIND==1+cNorm){
 	# Now produce empirical precision curve as a function of orbit-pair count (c), for each orbit-pair
 	printf("Predictive stats for '"$*"'\n") > "/dev/stderr"
 	for(cnp in hist) {
@@ -93,21 +98,21 @@ hawk 'BEGIN{'"$MINIMUMS"'}
 	}
 	if('$PREDICTORS_ONLY')exit(0);
     }}
-    ARGIND==3{ # actually the same file, just that we go through it now creating predictions
+    ARGIND==2+cNorm{ # actually the same file, just that we go through it now creating predictions
 	uv=$1 # node pair
 	ASSERT(2==split(uv,a,":"),"first column not colon-separated");
-	u=a[1]; v=a[2]; #ASSERT(u>v,"u and v in wrong order");
-	if(u<v) {tmp=u; u=v; v=tmp}
+	u=a[1]; v=a[2]; if(u<v) {tmp=u; u=v; v=tmp}
 	p1=0;
 	c=0; bestCol="none";
 	for(i=3;i<NF;i+=2)if($i in hist) {
-	    cnp=$i; c=int($(i+1)/StatMean(cnp));
+	    cnp=$i; c=$(i+1); if(cNorm) c /= StatMean(cnp)
+	    c=WeightToBin(c);
 	    if(c>max[cnp])c=max[cnp]; # clip the orbit count to the highest seen during training
 	    # filter on "reasonable" orbit pairs
 	    if(p1<prec[cnp][c]){p1=prec[cnp][c];bestCol=c"="cnp} #... and take the best resulting prediction
 	}
 	if(p1>min_p && E[uv]<='$INCLUDE_KNOWN') printf "%s\t%g\tbestCol %s\t[%s]\n",uv,p1,bestCol,$0
-    }' "$TMPDIR/input" "$TMPDIR/input" "$TMPDIR/input" | # yes, three times
+    } ARGIND==3 && !cNorm{nextfile}' "$TMPDIR/input" "$TMPDIR/input" "$TMPDIR/input" | # yes, three times
     sort -k 2gr -k 4nr |
     if [ "$EVALUATE" = "" ]; then
 	cat

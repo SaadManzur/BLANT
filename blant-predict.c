@@ -397,13 +397,13 @@ void Predict_ProcessLine(GRAPH *G, char line[])
 */
 static BINTREE *_canonicalParticipationCounts[MAX_CANONICALS][MAX_K][MAX_K];
 
+#if 0  // alternate (which I think is correct) accumulation
+#include "blant-predict-accumulate-alternate.c"
+#else  // Original accumulation of submotifs
 /*
 ** All we need to add here is the inner loop that you have further down, over q and r, storing
 ** the count in relation to o and p. Then, when you TraverseCanonicals later, you'll use _perm[]
 ** to recover both u:v and x:y, and then do one of the following:
-**      if we want the weight of u:v:o:p to be unique q:r:x:y quadruples, then:
-	    
-** contain the count of unique edges that contribute to u:v.
 */
 void SubmotifIncrementCanonicalPairCounts(int topOrdinal, int Gint, TINY_GRAPH *g)
 {
@@ -520,6 +520,8 @@ static void AccumulateCanonicalSubmotifs(int topOrdinal, TINY_GRAPH *g)
     }
 }
 
+#endif // AccumulateCanonicals versions
+
 /* This is called from ProcessGraphlet: a whole Varray of nodes from a sampled graphlet. Our job here is to
 ** accumulate the association counts for each pair of nodes, using the memoized counts from canonical graphlets
 ** computed above.
@@ -599,8 +601,18 @@ void AccumulateGraphletParticipationCounts(GRAPH *G, unsigned Varray[], TINY_GRA
 	if(g_u < g_v) { int tmp = g_u; g_u=g_v; g_v=tmp; } // lower triangle of g
 	_TraverseCanonicalPairs_G_u = G_u; _TraverseCanonicalPairs_G_v = G_v;
 	_TraverseCanonicalPairs_Varray = Varray; _TraverseCanonicalPairs_perm = perm;
-	if(_TraverseCanonicalPairs_weight)
+	if(_TraverseCanonicalPairs_weight) {
+#if 0
+	    // I do NOT understand why attempting to account for the overcount makes prediction WORSE... plus I can't
+	    // seem to get the counts to be equal between training edges and "phantom" test edges; the raw L3 counts
+	    // are equal but I can't get the smpled 4:11:11 counts to agree... and the closer I managed to get to
+	    // agreement by messing with the below ratios, the *worse* the prediction gets.
+	    double over = 1.0; //_alphaList[GintOrdinal]/_g_overcount;
+	    assert(over);
+	    _TraverseCanonicalPairs_weight *= over; // account for MCMC alpha
+#endif
 	    BinTreeTraverse(_canonicalParticipationCounts[GintOrdinal][i][j], TraverseCanonicalPairs);
+	}
 #if 0
 	int l,m;
 	for(l=1;l<_k;l++) for(m=0;m<l;m++) if(l!=i && m!=j && TinyGraphAreConnected(g,perm[l],perm[m])) {

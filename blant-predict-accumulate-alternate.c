@@ -25,72 +25,67 @@
 void SubmotifIncrementCanonicalPairCounts(int topOrdinal, int top_u, int top_v, TINY_GRAPH *g)
 {
     int Gint = TinyGraph2Int(g,_k);
-    int i, j, GintOrdinal=_K[Gint];
-    char perm[MAX_K];
+    int GintOrdinal=_K[Gint];
+    char perm[MAX_K], inversePerm[MAX_K];
     memset(perm, 0, _k);
     ExtractPerm(perm, Gint);
-    for(i=1;i<_k;i++) for(j=0;j<i;j++) // we're actually just looking for top_u and top_v
-    {
-	// We are trying to determine the frequency that a pair of nodes in the topOrdinal have an edge based on their
-	// being located at a pair of canonical nodes in a sub-motif. The frequency only makes sense if the underlying
-	// edge between them can sometimes exist and sometimes not; but if TinyGraphAreConnected(u,v)=true, the edge
-	// already exists in this motif (and thus also in the topOrdinal) and there's nothing to predict. Thus, we only
-	// want to check this node pair if the motif does NOT have the edge. (Comment label: (+++))
+    InvertPerm(inversePerm, perm);
 
-	// It would be more clever to create the inverse permutation to get i&j from top_[uv], to avoid the ij loop
-	// above, but since this only done once per canonical, it shouldn't impact runtime too much.
-	int u=(int)perm[i], v=(int)perm[j]; // u and v in the *current* motif
-	if(u==top_u && v==top_v)
-	{
-	    assert(!TinyGraphAreConnected(g,u,v));
-	    int o=_orbitList[GintOrdinal][i], p=_orbitList[GintOrdinal][j];
-	    // the association is between a *node pair* in the canonical top graphlet, and an *orbit pair* of the
-	    // motif that they are participating in. Since the pair is undirected, we need to choose a unique order
-	    // to use an a key, so we simply sort the pair.
-	    // And since we want lower triangle, row > column, always, so o=1...n-1, p=0...o-1
-	    if(u < v) { int tmp = u; u=v; v=tmp; }
-	    if(o < p) { int tmp = o; o=p; p=tmp; }
-	    assert(_canonicalParticipationCounts[topOrdinal][u][v]);
-	    int *pcount;
-	    char buf[BUFSIZ], buf_kop_only[BUFSIZ];
-	    sprintf(buf_kop_only,"%d:%d:%d", _k,o,p);
+    // We are trying to determine the frequency that a pair of nodes in the topOrdinal have an edge based on their
+    // being located at a pair of canonical nodes in a sub-motif. The frequency only makes sense if the underlying
+    // edge between them can sometimes exist and sometimes not; but if TinyGraphAreConnected(u,v)=true, the edge
+    // already exists in this motif (and thus also in the topOrdinal) and there's nothing to predict. Thus, we only
+    // want to check this node pair if the motif does NOT have the edge. (Comment label: (+++))
+
+    int i=inversePerm[top_u], j=inversePerm[top_v]; // i and j are now the canonical node IDs
+
+    assert(!TinyGraphAreConnected(g,top_u,top_v));
+    int o=_orbitList[GintOrdinal][i], p=_orbitList[GintOrdinal][j];
+    // the association is between a *node pair* in the canonical top graphlet, and an *orbit pair* of the
+    // motif that they are participating in. Since the pair is undirected, we need to choose a unique order
+    // to use an a key, so we simply sort the pair.
+    // And since we want lower triangle, row > column, always, so o=1...n-1, p=0...o-1
+    if(top_u < top_v) { int tmp = top_u; top_u=top_v; top_v=tmp; }
+    if(o < p) { int tmp = o; o=p; p=tmp; }
+    assert(_canonicalParticipationCounts[topOrdinal][top_u][top_v]);
+    int *pcount;
+    char buf[BUFSIZ], buf_kop_only[BUFSIZ];
+    sprintf(buf_kop_only,"%d:%d:%d", _k,o,p);
 #if COUNT_uv_only
-	    sprintf(buf,"%d:%d:%d", _k,o,p);
+    sprintf(buf,"%d:%d:%d", _k,o,p);
 #else
-	    int q,r;
-	    for(q=1;q<_k;q++) for(r=0;r<q;r++) if(q!=o || r!=p) {
-		int x=(int)perm[q], y=(int)perm[r];
-		if(TinyGraphAreConnected(g,x,y)) { // (x,y) only counts if it's an edge
-  #if COUNT_xy_only
-		    sprintf(buf,"%d:%d:%d:%d:%d", _k,o,p,x,y);
-  #else
-		    sprintf(buf,"%d:%d:%d:%d:%d:%d:%d", _k,o,p,q,r,x,y);
-  #endif
-		}
-	    }
+    int q,r;
+    for(q=1;q<_k;q++) for(r=0;r<q;r++) if(q!=o || r!=p) {
+	int x=(int)perm[q], y=(int)perm[r];
+	if(TinyGraphAreConnected(g,x,y)) { // (x,y) only counts if it's an edge
+#if COUNT_xy_only
+	    sprintf(buf,"%d:%d:%d:%d:%d", _k,o,p,x,y);
+#else
+	    sprintf(buf,"%d:%d:%d:%d:%d:%d:%d", _k,o,p,q,r,x,y);
 #endif
-	    if(!_predictiveOrbits || BinTreeLookup(_predictiveOrbits, (foint)(void*) buf_kop_only, (void*) NULL)) {
-		if(BinTreeLookup(_canonicalParticipationCounts[topOrdinal][u][v], (foint)(void*) buf, (void*) &pcount))
-		    ++*pcount;
-		else {
-		    pcount = Omalloc(sizeof(int));
-		    *pcount = 1;
-		    BinTreeInsert(_canonicalParticipationCounts[topOrdinal][u][v], (foint)(void*) buf, (foint)(void*) pcount);
-		}
-    #if 0
-		int l,m;
-		for(l=0;l<_k-1;l++) for(m=l+1;m<_k;m++) if(l!=i && m!=j && TinyGraphAreConnected(g,perm[l],perm[m])) {
-		    int q=_orbitList[GintOrdinal][l];
-		    int r=_orbitList[GintOrdinal][m];
-		    int x=(int)perm[l];
-		    int y=(int)perm[m];
-		    if(x < y) { int tmp = x; x=y; y=tmp; }
-		    if(r < q) { int tmp = q; q=r; r=tmp; }
-		    // increase the count of octuplet (u,v, o,p, q,r, x,y)
-		}
-    #endif
-	    }
-        }
+	}
+    }
+#endif
+    if(!_predictiveOrbits || BinTreeLookup(_predictiveOrbits, (foint)(void*) buf_kop_only, (void*) NULL)) {
+	if(BinTreeLookup(_canonicalParticipationCounts[topOrdinal][top_u][top_v], (foint)(void*) buf, (void*) &pcount))
+	    ++*pcount;
+	else {
+	    pcount = Omalloc(sizeof(int));
+	    *pcount = 1;
+	    BinTreeInsert(_canonicalParticipationCounts[topOrdinal][top_u][top_v], (foint)(void*) buf, (foint)(void*) pcount);
+	}
+#if 0
+	int l,m;
+	for(l=0;l<_k-1;l++) for(m=l+1;m<_k;m++) if(l!=i && m!=j && TinyGraphAreConnected(g,perm[l],perm[m])) {
+	    int q=_orbitList[GintOrdinal][l];
+	    int r=_orbitList[GintOrdinal][m];
+	    int x=(int)perm[l];
+	    int y=(int)perm[m];
+	    if(x < y) { int tmp = x; x=y; y=tmp; }
+	    if(r < q) { int tmp = q; q=r; r=tmp; }
+	    // increase the count of octuplet (top_u,top_v, o,p, q,r, x,y)
+	}
+#endif
     }
 }
 

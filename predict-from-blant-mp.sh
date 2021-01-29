@@ -1,5 +1,5 @@
 #!/bin/sh
-USAGE="$0 [-evaluate TestEdgeList.el] [-predictors-only] [-include-known] blant-mp-file
+USAGE="$0 [-eval TestEdgeList.el] [-a] [-predictors-only ] [-nonorm] [-include-known] [-sum[log]] [-notL3] blant-mp-file
 PURPOSE: given a blant-mp output file, learn which motifs have predictive value, and then use the precision curves to
 create a list of predictions sorted best-to-worst. By default, we only output predictions on the set of node pairs
 that had *no* edge in the blast-mp file; these are genuine predictions. If the '-include-known' option is given, then
@@ -8,32 +8,49 @@ the training data."
 
 die(){ (echo "$USAGE"; echo "FATAL ERROR: $@")>&2; exit 1; }
 
+TMPDIR=`mktemp -d /tmp/predict-from-blant-mp.XXXXXX`
+ trap "/bin/rm -rf $TMPDIR; exit" 0
+ trap "echo error encountered: TMPDIR is $TMPDIR; exit" 1 2 3 15
+
+WINDOW_SIZE=1
 INCLUDE_KNOWN=0
 PREDICTORS_ONLY=0
+DO_NORM=1 # you normally want to leave this ON because then BINS_PER_WEIGHT_UNIT=100 makes sense; otherwise too many bins
 EVALUATE=''
-TIGHT_MINIMUMS="min_samples=10000; min_rho=0.05; min_t= 20; min_p=0.1" # very stringent, used for actual prediction
-LOOSE_MINIMUMS="min_samples=100  ; min_rho=0.01; min_t=  5; min_p=0.1" # less stringent, just for detection
+ALL_PREDICTIONS=0
+VERBOSE=0
+TIGHT_MINIMUMS="min_samples=10000; min_rho=0.15; min_t= 50; min_p=0.8" # When using Pearson
+LOOSE_MINIMUMS="min_samples=100  ; min_rho=0.01; min_t=  6; min_p=0.5" # less stringent, just for detection
 MINIMUMS="$TIGHT_MINIMUMS" # default is tight
 
-while [ $# -gt 1 ]; do
+while [ $# -gt 0 ]; do
     case "$1" in
     -include-known) INCLUDE_KNOWN=1; shift;;
-    -predictors-only) PREDICTORS_ONLY=1; shift
-	MINIMUMS="$LOOSE_MINIMUMS"
-	;;
+    -predictors-only) PREDICTORS_ONLY=1; MINIMUMS="$LOOSE_MINIMUMS"; shift;;
+    -v*) VERBOSE=1; shift;;
+    -nonorm*) DO_NORM=0; shift;;
     -eval*) EVALUATE="$2"; shift 2;;
+    -win*) WINDOW_SIZE="$2"; shift 2;;
+    -a*) ALL_PREDICTIONS=1; shift;;
+    -) shift; break;; # means we're processing stdin
     -*) die "unknown option '$1'";;
     *) break;;
     esac
 done
 
-[ $# -ge 1 ] || die "expecting a blant-mp output file"
+if [ $DO_NORM = 0 ]; then
+    THIRD_PASS=''
+else
+    THIRD_PASS="$TMPDIR/input" # Just the filename; file doesn't exist until it's created below
+fi
 
-TMPDIR=`mktemp -d /tmp/predict-from-blant-mp.XXXXXX`
- trap "/bin/rm -rf $TMPDIR; exit" 0
- trap "echo error encountered: TMPDIR is $TMPDIR; exit" 1 2 3 15
+if [ $# -eq 0 ]; then
+    echo processing stdin >&2
+    set -
+else
+    echo processing "$@" >&2
+fi
 
-echo processing files "$@" >&2
 wzcat "$@" > $TMPDIR/input
 
 # input lines look like:
@@ -46,7 +63,7 @@ wzcat "$@" > $TMPDIR/input
 BINS_PER_WEIGHT_UNIT=100
 
 hawk 'function WeightToBin(w){return int('$BINS_PER_WEIGHT_UNIT'*w);} # because weights are floats but we need to bin them
-    BEGIN{windowSize=30; '"$MINIMUMS"'; cNorm=1} # cNorm = Boolean: normalize by StatMean(cnp)?
+    BEGIN{windowSize='$WINDOW_SIZE'; '"$MINIMUMS"'; cNorm='$DO_NORM'} # cNorm = Boolean: normalize by StatMean(cnp)?
     ARGIND<=1+cNorm{
 	uv=$1 # node pair
 	ASSERT(2==split(uv,a,":"),"first column not colon-separated");
@@ -82,22 +99,31 @@ hawk 'function WeightToBin(w){return int('$BINS_PER_WEIGHT_UNIT'*w);} # because 
 		    ABS(_Pearson_rho[cnp])>=min_rho && _Pearson_t[cnp]>=min_t) {
 		    #printf "cnp %s maxc = %d\n", cnp, max[cnp]
 		    ASSERT(length(hist[cnp][max[cnp]])>0, "length(hist["cnp"][max_c="max[cnp]"])="length(hist[cnp][max[cnp]]));
+		    numpr[cnp][ max[cnp] + 1 ]=0
 		    for(c=max[cnp];c>=0; --c) { # starting at the highest orbit-pair counts
 			numer[cnp]+=hist[cnp][c][1]; # those that actually had an edge
 			denom[cnp]+=hist[cnp][c][1]+hist[cnp][c][0]; # both edge and non-edge
 			# precision of this orbit-pair as func of c (add 1 to denom simply to avoid div by zero)
 			if(denom[cnp]) prec[cnp][c] = numer[cnp]/denom[cnp];
 			else prec[cnp][c] = prec[cnp][c+1];
-			#printf "cnp %s c %d numer %d denom %d prec %g\n", cnp, c, numer[cnp], denom[cnp], prec[cnp][c]
+			numpr[cnp][c]=numpr[cnp][c+1]+hist[cnp][c][0]; # number of genuine predictions from max_c down to c
+			#printf "cnp %s c %d numer %d denom %d numpr %d prec %g\n", cnp, c, numer[cnp], denom[cnp], numpr[cnp][c], prec[cnp][c]
 		    }
+		    # Now, a heuristic "fix" to statistical noise for the few, highest-scoring counts: fix the top predictions
+		    # so that the precision is artificially fixed to be monotonically increasing with orbit pair count
+		    maxP[cnp]=0; # max "raw" precision
 		    wPrec[cnp][0]=0;
-		    for(c=1; c<=max[cnp];c++) { # starting at the LOWEST orbit-pair counts
+		    for(c=0; c<=max[cnp];c++) { # starting at the LOWEST orbit-pair counts
+			# make raw precision non-decreasing with increasing orbit count
+			prec[cnp][c] = maxP[cnp] = MAX(maxP[cnp],prec[cnp][c]);
+			# make weighted precision a moving average across windowSize values of c
 			newPrec = (wPrec[cnp][c-1] * (windowSize-1) + prec[cnp][c])/windowSize; 
 			wPrec[cnp][c] = MAX(newPrec, wPrec[cnp][c-1]); # precision should be monotonically increasing
-			#printf "prec[%d] = %g; wPrec = %g\n", c, prec[cnp][c], wPrec[cnp][c]
+			#printf "prec[%d] = %g; wPrec = %g; numpr = %d \n", c, prec[cnp][c], wPrec[cnp][c], numpr[cnp][c]
 		    }
-		    maxP[cnp]=wPrec[cnp][max[cnp]]; # maxP occurs at the highest c
-		    if(maxP[cnp]>= min_p) keep=1
+		    # re-purpose maxP to be the max wPrec (above it was max "raw" prec)
+		    maxP[cnp]=wPrec[cnp][max[cnp]]; # maxP occurs at the highest c since wPrec is monotonically increasing
+		    if(maxP[cnp] >= min_p) keep=1
 		}
 
 		if(keep) print PearsonPrint(cnp),cnp,maxP[cnp] > "/dev/stderr"
@@ -109,24 +135,35 @@ hawk 'function WeightToBin(w){return int('$BINS_PER_WEIGHT_UNIT'*w);} # because 
 	}
 	if('$PREDICTORS_ONLY')exit(0);
     }
-    ARGIND==2+cNorm{ # actually the same file, just that we go through it now creating predictions
+    ARGIND==2+cNorm{ # same file, making predictions on the last pass
 	uv=$1 # node pair
 	ASSERT(2==split(uv,a,":"),"first column not colon-separated");
 	u=a[1]; v=a[2]; if(u<v) {tmp=u; u=v; v=tmp}
-	p1=0;
-	c=0; bestCol="none";
+
+	# First pass through the line: find the highest precision orbit pair
+	c = p1 = 0;
+	bestCol="none"; bestVal=0;
 	for(i=3;i<NF;i+=2)if($i in hist) {
 	    cnp=$i; c=$(i+1); if(cNorm) c /= StatMean(cnp)
 	    c=WeightToBin(c);
 	    if(c>max[cnp])c=max[cnp]; # clip the orbit count to the highest seen during training
 	    # filter on "reasonable" orbit pairs
-	    if(p1<wPrec[cnp][c]){p1=wPrec[cnp][c];bestCol=c"="cnp} #... and take the best resulting prediction
+	    if(p1<wPrec[cnp][c]){p1=wPrec[cnp][c];bestCol=cnp;bestVal=c}
 	}
-	if(p1>min_p && E[uv]<='$INCLUDE_KNOWN') printf "%s\t%g\tbestCol %s\t[%s]\n",uv,p1,bestCol,$0
-    } ARGIND==3 && !cNorm{nextfile}' "$TMPDIR/input" "$TMPDIR/input" "$TMPDIR/input" | # yes, three times
-    sort -k 2gr -k 4nr |
+
+	if(('$ALL_PREDICTIONS' || p1>min_p) && E[uv]<='$INCLUDE_KNOWN'){
+	    printf "%s\t%g\t%d %s %d", uv, p1, bestVal, bestCol, numpr[bestCol][bestVal]
+	    if('$VERBOSE') printf "\t[%s]\n",$0
+	    else print ""
+	}
+    }' "$TMPDIR/input" "$TMPDIR/input" $THIRD_PASS |
+    sort -k 2,2gr -k 3,3nr -k 5,5nr |
     if [ "$EVALUATE" = "" ]; then
 	cat
     else
-	awk 'ARGIND==1{E[$1][$2]=E[$2][$1]=1}ARGIND==2{split($1,a,":"); if((a[1] in E) && (a[2] in E[a[1]]))++sum; printf "%d prec %g %s\n", FNR, sum/FNR,$0}' "$EVALUATE" -
+	awk 'ARGIND==1{E[$1][$2]=E[$2][$1]=1}
+	    ARGIND==2{
+		split($1,a,":"); T=((a[1] in E) && (a[2] in E[a[1]]));
+		sum+=T; printf "%d %d prec %g %s\n", T, FNR, sum/FNR,$0
+	    }' "$EVALUATE" -
     fi

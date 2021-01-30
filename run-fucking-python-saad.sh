@@ -1,6 +1,8 @@
 #/bin/sh
 # Do whatever is necessary to load your favorite version of python on the line(s) below
-module load python/3.7.4
+module load anaconda3/2020.11
+
+conda activate py38
 
 # Now tell me the name of the python interpreter that you want to use, given the above
 PYTHON=python3
@@ -23,6 +25,9 @@ sed '1,/^#Put/d' "$0" > $TMPDIR/fuck-python.py
 chmod +x $TMPDIR/fuck-python.py
 
 exec $PYTHON $TMPDIR/fuck-python.py "$@"
+
+conda deactivate py38
+
 exit 1
 
 
